@@ -1,0 +1,11 @@
+[package]
+name = "lightwispr"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Minimal local voice dictation for Linux (Wispr Flow alternative)"
+
+[dependencies]
+anyhow = "1.0.104"
+cpal = "0.18.2"
+transcribe-rs = { version = "0.3.12", features = ["onnx"] }

@@ -74,7 +74,10 @@ hotkey/bar ─▶ capture (PipeWire, 16 kHz mono, in memory)
 
 ## Hotkeys (Hyprland)
 
-- Push-to-talk: hold to record, release to transcribe (`bind` press + `bindr` release). Exact key: free combo, checked with `hyprctl binds -j`.
+- **Default: hold Ctrl+Super** (modifier-only), release to transcribe.
+  Caveat: Super+Ctrl+<key> binds exist (workspace switching etc.). Recording starts silently on press; the start sound and
+  the "recording" state only kick in after ~250 ms of holding with no other key. A chord (Super+Ctrl+Left …) or a shorter tap
+  is discarded silently. Needs a way to see "another key was pressed" (Hyprland submap or keyboard events); solve in milestone 3.
 - Toggle variant for long dictation.
 - **Esc cancels** while recording: bound dynamically only during recording, so Esc stays untouched otherwise.
 
@@ -109,10 +112,21 @@ hotkey/bar ─▶ capture (PipeWire, 16 kHz mono, in memory)
 3. **Daemon + hotkeys + sounds.**
 4. **Noctalia plugin** (widget + panel).
 5. **Enhancement + modes.**
-6. **Open-source release:** README, license (proposal: MIT or Apache-2.0), model attribution (Parakeet CC-BY-4.0), AUR package.
+6. **Open-source release:** README, MIT license, model attribution (Parakeet CC-BY-4.0), AUR package.
 
 ## Open questions
 
-- Code license: MIT or Apache-2.0?
 - Default enhancement model size (0.6B vs 1.7B): decide after measuring quality on German.
-- Push-to-talk key combo.
+- GPU: CPU is already fast (see below); CUDA adds several GB of runtime libs. Decide whether GPU stays opt-in.
+
+## Prototype results (2026-10-07, i9-9900K, CPU only, int8)
+
+| | |
+|---|---|
+| Model load | 0.85 s |
+| Speed | ~18x real-time (11 s audio → 0.59 s, 29 s → 1.6 s) |
+| RAM | ~1.0 GB loaded, ~1.1–1.2 GB peak while transcribing |
+| Binary | 31 MB (ONNX Runtime linked in) |
+
+Model files: `istupakov/parakeet-tdt-0.6b-v3-onnx` @ `8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce`, sha256:
+encoder `6139d2fa…aff09`, decoder_joint `eea7483e…67a70`, nemo128 `a9fde148…19e9f`, vocab `d5854467…3c35d`.
