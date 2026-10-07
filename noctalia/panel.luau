@@ -166,10 +166,8 @@ end
 
 local function footer()
   return ui.row({ gap = 6, align = "center", justify = "center" }, {
-    keycap("Ctrl"),
-    ui.label({ text = "+", fontSize = 11, color = "on_surface_variant" }),
-    keycap("Super"),
-    ui.label({ text = "·  " .. noctalia.tr("hint_cancel"), fontSize = 11, color = "on_surface_variant" }),
+    keycap(noctalia.tr("key")),
+    ui.label({ text = noctalia.tr("hint_hold") .. "  ·  " .. noctalia.tr("hint_cancel"), fontSize = 11, color = "on_surface_variant" }),
   })
 end
 

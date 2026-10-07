@@ -1,6 +1,6 @@
 {
   "title": "lightwispr",
-  "hint": "Strg+Super halten zum Diktieren",
+  "hint": "Rechte Strg halten zum Diktieren",
   "hint_cancel": "Esc bricht ab",
   "status": {
     "ready": "Bereit",
@@ -39,5 +39,7 @@
     "min": "vor {n} Min.",
     "hour": "vor {n} Std.",
     "day": "vor {n} T."
-  }
+  },
+  "key": "Strg rechts",
+  "hint_hold": "halten zum Sprechen"
 }

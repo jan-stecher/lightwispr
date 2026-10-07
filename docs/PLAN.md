@@ -74,12 +74,12 @@ hotkey/bar ─▶ capture (PipeWire, 16 kHz mono, in memory)
 
 ## Hotkeys (Hyprland)
 
-- **Default: hold Ctrl+Super** (modifier-only), release to transcribe.
-  Caveat: Super+Ctrl+<key> binds exist (workspace switching etc.). Recording starts silently on press; the start sound and
-  the "recording" state only kick in after ~250 ms of holding with no other key. A chord (Super+Ctrl+Left …) or a shorter tap
-  is discarded silently. Needs a way to see "another key was pressed" (Hyprland submap or keyboard events); solve in milestone 3.
+- **Default: hold Right Ctrl**, release to transcribe (decided 2026-10-07; Ctrl+Super collided with
+  Super+Ctrl workspace binds, Super+Alt would have too). A tap (<250 ms) does nothing.
+- While recording, the daemon enters the Hyprland submap `lightwispr`: releasing Right Ctrl finishes,
+  Esc or any other key cancels. The submap binds reset the submap themselves, so the keyboard can't get stuck;
+  the daemon also resets it on start (crash recovery). Hard limit: 5 min per take.
 - Toggle variant for long dictation.
-- **Esc cancels** while recording: bound dynamically only during recording, so Esc stays untouched otherwise.
 
 ## Daemon / CLI
 
@@ -111,7 +111,7 @@ hotkey/bar ─▶ capture (PipeWire, 16 kHz mono, in memory)
 2. ✅ **Delivery:** input-method commit + clipboard fallback. Test in GTK, Chrome, Brave, kitty, Warp.
 3. **Daemon + hotkeys + sounds.** ✅
 4. **Noctalia plugin** (widget + panel). ✅
-5. **Enhancement + modes.**
+5. **Enhancement + modes.** Postponed (2026-10-07): Parakeet's raw output is good enough for now.
 6. **Open-source release:** README, MIT license, model attribution (Parakeet CC-BY-4.0), AUR package.
 
 ## Open questions

@@ -2,9 +2,12 @@
 //! transcription, sounds, Wayland and Hyprland events run on helper threads and talk
 //! to it through a channel.
 //!
-//! Push-to-talk (Ctrl+Super): on key-down the mic opens silently ("armed"). Only after
-//! ARM_DELAY without a chord does it become a real recording (start sound). A chord
-//! (Super+Ctrl+Left …) shows up as a Hyprland workspace/window event and discards it.
+//! Push-to-talk (Right Ctrl by default): on key-down the mic opens silently ("armed"), so
+//! a quick tap does nothing. After ARM_DELAY it becomes a real recording (start sound) and
+//! the daemon switches Hyprland into the "lightwispr" submap: releasing the key finishes,
+//! Esc or any other key cancels. Those submap binds also leave the submap on their own, so
+//! the keyboard can't get stuck. Workspace/window events (a chord with a bound key)
+//! discard an armed take silently.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
@@ -32,6 +35,9 @@ const MIN_SPEECH: Duration = Duration::from_millis(300);
 /// Below this peak RMS the recording is considered silence.
 const SILENCE_RMS: f32 = 0.004;
 const HISTORY_MAX: usize = 10;
+/// Safety net: a dictation never runs longer than this.
+const MAX_RECORDING: Duration = Duration::from_secs(300);
+const SUBMAP: &str = "lightwispr";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -61,6 +67,7 @@ enum Outcome {
 enum Msg {
     Cmd(String, Sender<String>),
     ArmTimeout(u64),
+    MaxDuration(u64),
     Chord,
     Done(u64, Result<(String, Delivered)>),
     Tick,
@@ -91,7 +98,7 @@ struct Daemon {
     generation: Arc<AtomicU64>,
     last: Option<Outcome>,
     last_at: u64,
-    esc_bound: bool,
+    in_submap: bool,
     config: Config,
     ready: Arc<AtomicBool>,
     /// The bar has seen `ready: true` (state file written after the model loaded).
@@ -156,11 +163,15 @@ pub fn run() -> Result<()> {
         generation,
         last: None,
         last_at: 0,
-        esc_bound: false,
+        in_submap: false,
         config,
         ready,
         ready_written: false,
     };
+    // Recover from a crash mid-dictation.
+    if current_submap().as_deref() == Some(SUBMAP) {
+        hyprctl_dispatch("hl.dsp.submap('reset')");
+    }
     d.write_state();
     eprintln!("lightwispr ready ({})", sock.display());
     d.event_loop(rx);
@@ -229,6 +240,11 @@ impl Daemon {
                 Msg::Cmd(cmd, reply) => {
                     let r = self.command(&cmd);
                     let _ = reply.send(r);
+                }
+                Msg::MaxDuration(g) => {
+                    if self.phase == Phase::Recording && self.current() == g {
+                        self.finish();
+                    }
                 }
                 Msg::ArmTimeout(g) => {
                     if self.phase == Phase::Armed && self.current() == g {
@@ -337,7 +353,7 @@ impl Daemon {
                 self.sound.play(Cue::Start);
             }
             "quit" => {
-                self.unbind_esc();
+                self.leave_submap();
                 std::process::exit(0);
             }
             other => return json!({ "ok": false, "error": format!("unknown command: {other}") }).to_string(),
@@ -415,29 +431,34 @@ impl Daemon {
     }
 
     fn set_phase(&mut self, phase: Phase) {
+        let entering = phase == Phase::Recording && self.phase != Phase::Recording;
         self.phase = phase;
-        // Esc cancels only while a take is live; otherwise it belongs to the apps.
-        if matches!(phase, Phase::Recording | Phase::Processing) {
-            self.bind_esc();
-        } else {
-            self.unbind_esc();
+        if entering {
+            self.enter_submap();
+            let (tx, g) = (self.tx.clone(), self.current());
+            std::thread::spawn(move || {
+                std::thread::sleep(MAX_RECORDING);
+                let _ = tx.send(Msg::MaxDuration(g));
+            });
+        } else if phase != Phase::Recording {
+            self.leave_submap();
         }
         self.write_state();
     }
 
-    fn bind_esc(&mut self) {
-        if self.esc_bound {
-            return;
-        }
-        let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "lightwispr".into());
-        let lua = format!("hl.bind('Escape', hl.dsp.exec_cmd('{exe} cancel'), {{ description = 'lightwispr: cancel dictation' }})");
-        self.esc_bound = hyprctl_eval(&lua);
+    /// While recording, keys belong to the dictation (release = done, anything else = cancel).
+    fn enter_submap(&mut self) {
+        self.in_submap = hyprctl_dispatch(&format!("hl.dsp.submap('{SUBMAP}')"));
     }
 
-    fn unbind_esc(&mut self) {
-        if self.esc_bound {
-            hyprctl_eval("hl.unbind('Escape')");
-            self.esc_bound = false;
+    fn leave_submap(&mut self) {
+        if self.in_submap {
+            // The submap binds usually reset it already; only reset if we're still in it,
+            // so we never kick the user out of a submap of their own.
+            if current_submap().as_deref() == Some(SUBMAP) {
+                hyprctl_dispatch("hl.dsp.submap('reset')");
+            }
+            self.in_submap = false;
         }
     }
 
@@ -479,13 +500,18 @@ impl Daemon {
     }
 }
 
-fn hyprctl_eval(lua: &str) -> bool {
+fn hyprctl_dispatch(lua: &str) -> bool {
     std::process::Command::new("hyprctl")
-        .args(["eval", lua])
+        .args(["dispatch", lua])
         .stdout(std::process::Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+fn current_submap() -> Option<String> {
+    let out = std::process::Command::new("hyprctl").arg("submap").output().ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 fn history_path() -> PathBuf {

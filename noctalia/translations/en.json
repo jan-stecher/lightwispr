@@ -1,6 +1,6 @@
 {
   "title": "lightwispr",
-  "hint": "Hold Ctrl+Super to dictate",
+  "hint": "Hold Right Ctrl to dictate",
   "hint_cancel": "Esc cancels",
   "status": {
     "ready": "Ready",
@@ -39,5 +39,7 @@
     "min": "{n} min ago",
     "hour": "{n} h ago",
     "day": "{n} d ago"
-  }
+  },
+  "key": "Right Ctrl",
+  "hint_hold": "hold to talk"
 }
