@@ -1,5 +1,7 @@
-//! Watches Hyprland's event socket for workspace/window moves. Those come from
-//! Super+Ctrl+<key> binds, so they mean "this was a chord, not push-to-talk".
+//! Watches Hyprland's event socket:
+//! - workspace/window moves come from modifier+key binds, so during an armed take they
+//!   mean "this was a chord, not push-to-talk",
+//! - `configreloaded` means our runtime binds are gone and must be registered again.
 
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixStream;
@@ -14,8 +16,13 @@ fn socket_path() -> Option<PathBuf> {
     Some(PathBuf::from(runtime).join("hypr").join(sig).join(".socket2.sock"))
 }
 
-/// Calls `on_chord` for every relevant event. Reconnects if Hyprland restarts.
-pub fn watch(on_chord: impl Fn() + Send + 'static) {
+pub enum Event {
+    Chord,
+    Reloaded,
+}
+
+/// Calls `on_event` for every relevant event. Reconnects if Hyprland restarts.
+pub fn watch(on_event: impl Fn(Event) + Send + 'static) {
     std::thread::Builder::new()
         .name("hypr-events".into())
         .spawn(move || loop {
@@ -25,7 +32,9 @@ pub fn watch(on_chord: impl Fn() + Send + 'static) {
                     let Ok(line) = line else { break };
                     if let Some((event, _)) = line.split_once(">>") {
                         if CHORD_EVENTS.contains(&event) {
-                            on_chord();
+                            on_event(Event::Chord);
+                        } else if event == "configreloaded" {
+                            on_event(Event::Reloaded);
                         }
                     }
                 }

@@ -28,7 +28,7 @@
   },
   "sound": {
     "title": "Klang",
-    "enabled": "Interface-Sounds",
+    "enabled": "Sounds",
     "volume": "Lautstärke"
   },
   "record": {
@@ -41,7 +41,13 @@
     "hour": "vor {n} Std.",
     "day": "vor {n} T."
   },
-  "key": "Strg rechts",
   "hint_hold": "halten zum Sprechen",
-  "power": "An / aus (aus gibt den RAM des Modells frei)"
+  "power": "An / aus (aus gibt den RAM des Modells frei)",
+  "settings": "Einstellungen",
+  "hotkey": {
+    "label": "Kürzel",
+    "right_ctrl": "Strg rechts",
+    "ctrl_super": "Strg + Super",
+    "super_alt": "Super + Alt"
+  }
 }

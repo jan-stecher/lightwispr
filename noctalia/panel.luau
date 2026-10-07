@@ -9,6 +9,12 @@ local history = {}
 local historyStamp = -1
 local copiedAt = {} -- [index] = nowMs, for the brief "Copied" feedback
 local volumeDraft = nil
+-- Same order as the daemon's presets (src/hotkey.rs).
+local HOTKEYS = { "right_ctrl", "ctrl_super", "super_alt" }
+
+local function hotkeyId()
+  return (state and state.hotkey) or "right_ctrl"
+end
 
 local function statusText()
   if not alive or state == nil then
@@ -150,19 +156,44 @@ local function historyCard()
   }, "history", 1)
 end
 
-local function soundCard()
+local function settingRow(label, control)
+  return ui.row({ gap = 12, align = "center", height = 32 }, {
+    ui.label({ text = label, fontSize = 12, color = "on_surface_variant", width = 92 }),
+    ui.row({ flexGrow = 1, align = "center", justify = "end" }, { control }),
+  })
+end
+
+local function settingsCard()
+  local ready = alive and state ~= nil
   local on = state == nil or state.sound ~= false
   local vol = volumeDraft or (state and state.volume) or 0.35
+  local options, selected = {}, 0
+  for i, id in HOTKEYS do
+    table.insert(options, noctalia.tr("hotkey." .. id))
+    if id == hotkeyId() then
+      selected = i - 1
+    end
+  end
   return card({
-    cardHeader(noctalia.tr("sound.title"), on and "volume" or "volume-off", ui.toggle({
+    cardHeader(noctalia.tr("settings"), "adjustments-horizontal", nil),
+    settingRow(noctalia.tr("hotkey.label"), ui.select({
+      width = 180, controlSize = "sm", options = options, selectedIndex = selected, enabled = ready,
+      onChange = function(index)
+        local id = HOTKEYS[(tonumber(index) or 0) + 1]
+        if id then
+          C.run({ "hotkey", id })
+        end
+      end,
+    })),
+    settingRow(noctalia.tr("sound.enabled"), ui.toggle({
       checked = on,
-      enabled = alive and state ~= nil,
+      enabled = ready,
       onChange = function(v)
         C.run({ "sound", v == "true" and "on" or "off" })
       end,
     })),
-    ui.row({ gap = 12, align = "center", visible = on }, {
-      ui.label({ text = noctalia.tr("sound.volume"), fontSize = 12, color = "on_surface_variant", width = 80 }),
+    ui.row({ gap = 12, align = "center", height = 28, visible = on }, {
+      ui.label({ text = noctalia.tr("sound.volume"), fontSize = 12, color = "on_surface_variant", width = 92 }),
       ui.slider({
         flexGrow = 1, min = 0, max = 1, step = 0.05, value = vol, controlSize = "sm",
         onChange = function(v)
@@ -175,12 +206,12 @@ local function soundCard()
         end,
       }),
     }),
-  }, "sound")
+  }, "settings")
 end
 
 local function footer()
   return ui.row({ gap = 6, align = "center", justify = "center" }, {
-    keycap(noctalia.tr("key")),
+    keycap(noctalia.tr("hotkey." .. hotkeyId())),
     ui.label({ text = noctalia.tr("hint_hold") .. "  ·  " .. noctalia.tr("hint_cancel"), fontSize = 11, color = "on_surface_variant" }),
   })
 end
@@ -189,7 +220,7 @@ function render()
   panel.render(ui.column({ flexGrow = 1, gap = 12, padding = 4 }, {
     header(),
     historyCard(),
-    soundCard(),
+    settingsCard(),
     footer(),
   }))
 end

@@ -4,6 +4,7 @@ mod audio;
 mod config;
 mod daemon;
 mod deliver;
+mod hotkey;
 mod hypr;
 mod ime;
 mod ipc;
@@ -25,6 +26,7 @@ const USAGE: &str = "usage: lightwispr <command>
   history                print the last transcriptions as JSON
   clear-history          forget the stored transcriptions
   power on|off           load / unload the model (off frees its RAM, hotkey does nothing)
+  hotkey <preset>        push-to-talk key: right_ctrl | ctrl_super | super_alt
   sound on|off           UI sounds
   volume <0..1>          UI sound volume
   quit                   stop the daemon
@@ -39,7 +41,7 @@ fn main() -> Result<()> {
     let arg = |i: usize| args.get(i).map(String::as_str);
     match arg(0) {
         Some("daemon") => daemon::run(),
-        Some("ptt-down" | "ptt-up" | "toggle" | "cancel" | "status" | "history" | "clear-history" | "power" | "sound" | "volume" | "quit") => {
+        Some("ptt-down" | "ptt-up" | "toggle" | "cancel" | "status" | "history" | "clear-history" | "power" | "hotkey" | "sound" | "volume" | "quit") => {
             println!("{}", ipc::request(&args.join(" "))?);
             Ok(())
         }

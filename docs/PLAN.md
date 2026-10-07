@@ -74,6 +74,8 @@ hotkey/bar ─▶ capture (PipeWire, 16 kHz mono, in memory)
 
 ## Hotkeys (Hyprland)
 
+- Presets (registered by the daemon via `hyprctl eval`, re-registered on `configreloaded`; chosen in the panel or
+  `lightwispr hotkey <preset>`): right_ctrl (default), ctrl_super, super_alt.
 - **Default: hold Right Ctrl**, release to transcribe (decided 2026-10-07; Ctrl+Super collided with
   Super+Ctrl workspace binds, Super+Alt would have too). A tap (<250 ms) does nothing.
 - While recording, the daemon enters the Hyprland submap `lightwispr`: releasing Right Ctrl finishes,

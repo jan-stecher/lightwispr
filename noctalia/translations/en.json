@@ -28,7 +28,7 @@
   },
   "sound": {
     "title": "Sounds",
-    "enabled": "Interface sounds",
+    "enabled": "Sounds",
     "volume": "Volume"
   },
   "record": {
@@ -41,7 +41,13 @@
     "hour": "{n} h ago",
     "day": "{n} d ago"
   },
-  "key": "Right Ctrl",
   "hint_hold": "hold to talk",
-  "power": "On / off (off frees the model's RAM)"
+  "power": "On / off (off frees the model's RAM)",
+  "settings": "Settings",
+  "hotkey": {
+    "label": "Shortcut",
+    "right_ctrl": "Right Ctrl",
+    "ctrl_super": "Ctrl + Super",
+    "super_alt": "Super + Alt"
+  }
 }

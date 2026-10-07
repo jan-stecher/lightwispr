@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     /// Off = model unloaded (frees ~0.7 GB) and the hotkey does nothing.
     pub enabled: bool,
+    /// Push-to-talk preset (see hotkey.rs): right_ctrl | ctrl_super | super_alt.
+    pub hotkey: String,
     /// UI sounds on/off.
     pub sound: bool,
     /// UI sound volume 0..1.
@@ -18,7 +20,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { enabled: true, sound: true, volume: 0.35 }
+        Self { enabled: true, hotkey: crate::hotkey::DEFAULT.to_string(), sound: true, volume: 0.35 }
     }
 }
 

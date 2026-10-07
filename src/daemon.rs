@@ -37,7 +37,7 @@ const SILENCE_RMS: f32 = 0.004;
 const HISTORY_MAX: usize = 10;
 /// Safety net: a dictation never runs longer than this.
 const MAX_RECORDING: Duration = Duration::from_secs(300);
-const SUBMAP: &str = "lightwispr";
+use crate::hotkey::{self, SUBMAP};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -68,6 +68,8 @@ enum Msg {
     Cmd(String, Sender<String>),
     ArmTimeout(u64),
     MaxDuration(u64),
+    /// Hyprland reloaded its config: our runtime binds are gone.
+    Reloaded,
     Chord,
     Done(u64, Result<(String, Delivered)>),
     Tick,
@@ -131,8 +133,11 @@ pub fn run() -> Result<()> {
     let jobs = spawn_stt_worker(tx.clone(), generation.clone(), ime, ready.clone());
     {
         let tx = tx.clone();
-        hypr::watch(move || {
-            let _ = tx.send(Msg::Chord);
+        hypr::watch(move |e| {
+            let _ = tx.send(match e {
+                hypr::Event::Chord => Msg::Chord,
+                hypr::Event::Reloaded => Msg::Reloaded,
+            });
         });
     }
     {
@@ -171,6 +176,7 @@ pub fn run() -> Result<()> {
         ready,
         ready_written: false,
     };
+    d.register_hotkey();
     // Recover from a crash mid-dictation.
     if current_submap().as_deref() == Some(SUBMAP) {
         hyprctl_dispatch("hl.dsp.submap('reset')");
@@ -276,6 +282,7 @@ impl Daemon {
                     let r = self.command(&cmd);
                     let _ = reply.send(r);
                 }
+                Msg::Reloaded => self.register_hotkey(),
                 Msg::MaxDuration(g) => {
                     if self.phase == Phase::Recording && self.current() == g {
                         self.finish();
@@ -385,6 +392,21 @@ impl Daemon {
                     self.write_state();
                 }
             }
+            "hotkey" => {
+                let Some(id) = arg.filter(|id| hotkey::find(id).is_some()) else {
+                    let ids: Vec<_> = hotkey::PRESETS.iter().map(|p| p.id).collect();
+                    return json!({ "ok": false, "error": format!("usage: hotkey <{}>", ids.join("|")) }).to_string();
+                };
+                if id != self.config.hotkey {
+                    self.config.hotkey = id.to_string();
+                    self.config.save();
+                    // Drops the old binds; `configreloaded` registers the new ones.
+                    if !hotkey::reload_config() {
+                        self.register_hotkey();
+                    }
+                    self.write_state();
+                }
+            }
             "clear-history" => {
                 let _ = std::fs::remove_file(history_path());
             }
@@ -482,6 +504,15 @@ impl Daemon {
         let _ = self.jobs.send(Work::Transcribe(Job { generation: self.current(), samples }));
     }
 
+    fn register_hotkey(&self) {
+        let preset = hotkey::find(&self.config.hotkey).or_else(|| hotkey::find(hotkey::DEFAULT));
+        if let Some(p) = preset {
+            if !hotkey::register(p) {
+                eprintln!("could not register the hotkey in Hyprland");
+            }
+        }
+    }
+
     fn set_last(&mut self, outcome: Outcome) {
         self.last = Some(outcome);
         self.last_at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
@@ -528,6 +559,7 @@ impl Daemon {
             "level": if self.phase == Phase::Recording { (self.level.get() as f64 * 100.0).round() / 100.0 } else { 0.0 },
             "last": self.last,
             "last_at": self.last_at,
+            "hotkey": self.config.hotkey,
             "sound": self.config.sound,
             "volume": (self.config.volume as f64 * 100.0).round() / 100.0,
         })
