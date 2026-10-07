@@ -1,0 +1,26 @@
+id = "lightwispr/lightwispr"
+name = "lightwispr"
+version = "0.1.0"
+plugin_api = 24
+author = "lightwispr"
+license = "MIT"
+dependencies = []
+tags = ["dictation", "speech", "voice"]
+icon = "microphone"
+description = "Local voice dictation: hold Ctrl+Super, speak, release. Status, history and settings in the bar."
+
+# Bar widget: mic status with a live level meter while you speak.
+# Left click opens the panel, right click starts/stops a dictation.
+[[widget]]
+id = "mic"
+entry = "widget.luau"
+
+# History and settings. Opens next to the widget.
+[[panel]]
+id = "panel"
+entry = "panel.luau"
+width = 380
+height = 600
+placement = "attached"
+position = "auto"
+open_near_click = true

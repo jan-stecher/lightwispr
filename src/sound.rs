@@ -6,6 +6,7 @@
 //!
 //! The output stream is opened on demand and closed after a short idle time.
 
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -93,11 +94,16 @@ fn render(cue: Cue, rate: u32, volume: f32) -> Vec<f32> {
 #[derive(Clone)]
 pub struct Player {
     tx: Sender<Cue>,
+    volume: Arc<AtomicU32>,
+    enabled: Arc<AtomicBool>,
 }
 
 impl Player {
-    pub fn new(volume: f32) -> Self {
+    pub fn new(volume: f32, enabled: bool) -> Self {
         let (tx, rx) = mpsc::channel::<Cue>();
+        let volume = Arc::new(AtomicU32::new(volume.to_bits()));
+        let enabled = Arc::new(AtomicBool::new(enabled));
+        let vol = volume.clone();
         std::thread::Builder::new()
             .name("sound".into())
             .spawn(move || {
@@ -109,7 +115,7 @@ impl Player {
                                 out = Output::open().map_err(|e| eprintln!("sound output: {e:#}")).ok();
                             }
                             if let Some(o) = &out {
-                                let pcm = render(cue, o.rate, volume);
+                                let pcm = render(cue, o.rate, f32::from_bits(vol.load(Ordering::Relaxed)));
                                 let mut q = o.queue.lock().unwrap();
                                 // Mix into whatever is still playing.
                                 for (i, s) in pcm.into_iter().enumerate() {
@@ -126,11 +132,21 @@ impl Player {
                 }
             })
             .expect("spawn sound thread");
-        Self { tx }
+        Self { tx, volume, enabled }
     }
 
     pub fn play(&self, cue: Cue) {
-        let _ = self.tx.send(cue);
+        if self.enabled.load(Ordering::Relaxed) {
+            let _ = self.tx.send(cue);
+        }
+    }
+
+    pub fn set_volume(&self, v: f32) {
+        self.volume.store(v.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn set_enabled(&self, on: bool) {
+        self.enabled.store(on, Ordering::Relaxed);
     }
 }
 

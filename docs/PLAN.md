@@ -108,9 +108,9 @@ hotkey/bar ─▶ capture (PipeWire, 16 kHz mono, in memory)
 ## Milestones
 
 1. **Prototype:** record → Parakeet → print (CLI). Measure RAM/latency. ✅
-2. **Delivery:** input-method commit + clipboard fallback. Test in GTK, Chrome, Brave, kitty, Warp.
-3. **Daemon + hotkeys + sounds.**
-4. **Noctalia plugin** (widget + panel).
+2. ✅ **Delivery:** input-method commit + clipboard fallback. Test in GTK, Chrome, Brave, kitty, Warp.
+3. **Daemon + hotkeys + sounds.** ✅
+4. **Noctalia plugin** (widget + panel). ✅
 5. **Enhancement + modes.**
 6. **Open-source release:** README, MIT license, model attribution (Parakeet CC-BY-4.0), AUR package.
 

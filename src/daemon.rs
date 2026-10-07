@@ -10,7 +10,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::audio::{self, Level, Recording};
+use crate::config::Config;
 use crate::deliver::{self, Delivered};
 use crate::ime::Ime;
 use crate::sound::{Cue, Player};
@@ -31,7 +32,6 @@ const MIN_SPEECH: Duration = Duration::from_millis(300);
 /// Below this peak RMS the recording is considered silence.
 const SILENCE_RMS: f32 = 0.004;
 const HISTORY_MAX: usize = 10;
-const VOLUME: f32 = 0.35;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -90,7 +90,12 @@ struct Daemon {
     /// Bumped whenever the current take is abandoned; stale results are dropped.
     generation: Arc<AtomicU64>,
     last: Option<Outcome>,
+    last_at: u64,
     esc_bound: bool,
+    config: Config,
+    ready: Arc<AtomicBool>,
+    /// The bar has seen `ready: true` (state file written after the model loaded).
+    ready_written: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -115,7 +120,8 @@ pub fn run() -> Result<()> {
         }
     };
 
-    let jobs = spawn_stt_worker(tx.clone(), generation.clone(), ime);
+    let ready = Arc::new(AtomicBool::new(false));
+    let jobs = spawn_stt_worker(tx.clone(), generation.clone(), ime, ready.clone());
     {
         let tx = tx.clone();
         hypr::watch(move || {
@@ -137,10 +143,11 @@ pub fn run() -> Result<()> {
         })?;
     }
 
+    let config = Config::load();
     let mut d = Daemon {
         tx,
         jobs,
-        sound: Player::new(VOLUME),
+        sound: Player::new(config.volume, config.sound),
         level: Level::default(),
         phase: Phase::Idle,
         trigger: Trigger::Ptt,
@@ -148,7 +155,11 @@ pub fn run() -> Result<()> {
         recording_since: Instant::now(),
         generation,
         last: None,
+        last_at: 0,
         esc_bound: false,
+        config,
+        ready,
+        ready_written: false,
     };
     d.write_state();
     eprintln!("lightwispr ready ({})", sock.display());
@@ -176,7 +187,7 @@ fn accept_loop(listener: UnixListener, tx: Sender<Msg>) {
     }
 }
 
-fn spawn_stt_worker(tx: Sender<Msg>, generation: Arc<AtomicU64>, ime: Option<Arc<Ime>>) -> Sender<Job> {
+fn spawn_stt_worker(tx: Sender<Msg>, generation: Arc<AtomicU64>, ime: Option<Arc<Ime>>, ready: Arc<AtomicBool>) -> Sender<Job> {
     let (jtx, jrx) = mpsc::channel::<Job>();
     std::thread::Builder::new()
         .name("stt".into())
@@ -194,6 +205,8 @@ fn spawn_stt_worker(tx: Sender<Msg>, generation: Arc<AtomicU64>, ime: Option<Arc
                 }
             };
             eprintln!("model loaded in {:.2?}", t.elapsed());
+            ready.store(true, Ordering::SeqCst);
+            let _ = tx.send(Msg::Tick);
             for job in jrx {
                 let result = stt.transcribe(&job.samples).and_then(|text| {
                     if text.is_empty() || generation.load(Ordering::SeqCst) != job.generation {
@@ -248,12 +261,13 @@ impl Daemon {
                                 Outcome::Error
                             }
                         };
-                        self.last = Some(outcome);
+                        self.set_last(outcome);
                         self.set_phase(Phase::Idle);
                     }
                 }
                 Msg::Tick => {
-                    if self.phase == Phase::Recording {
+                    if self.phase == Phase::Recording || !self.ready_written {
+                        self.ready_written = self.ready.load(Ordering::SeqCst);
                         self.write_state();
                     }
                 }
@@ -265,7 +279,10 @@ impl Daemon {
         self.generation.load(Ordering::SeqCst)
     }
 
-    fn command(&mut self, cmd: &str) -> String {
+    fn command(&mut self, line: &str) -> String {
+        let mut parts = line.split_whitespace();
+        let cmd = parts.next().unwrap_or("");
+        let arg = parts.next();
         match cmd {
             "ptt-down" => {
                 if self.phase == Phase::Idle {
@@ -288,13 +305,37 @@ impl Daemon {
                 Phase::Processing => {
                     self.generation.fetch_add(1, Ordering::SeqCst);
                     self.sound.play(Cue::Cancel);
-                    self.last = Some(Outcome::Cancelled);
+                    self.set_last(Outcome::Cancelled);
                     self.set_phase(Phase::Idle);
                 }
                 Phase::Idle => {}
             },
             "status" => {}
             "history" => return serde_json::to_string(&load_history()).unwrap_or_default(),
+            "clear-history" => {
+                let _ = std::fs::remove_file(history_path());
+            }
+            "sound" => {
+                self.config.sound = match arg {
+                    Some("on") => true,
+                    Some("off") => false,
+                    _ => !self.config.sound,
+                };
+                self.sound.set_enabled(self.config.sound);
+                self.config.save();
+                self.write_state();
+            }
+            "volume" => {
+                let Some(v) = arg.and_then(|a| a.parse::<f32>().ok()) else {
+                    return json!({ "ok": false, "error": "usage: volume <0..1>" }).to_string();
+                };
+                self.config.volume = v.clamp(0.0, 1.0);
+                self.sound.set_volume(self.config.volume);
+                self.config.save();
+                self.write_state();
+                // Let the user hear the new level.
+                self.sound.play(Cue::Start);
+            }
             "quit" => {
                 self.unbind_esc();
                 std::process::exit(0);
@@ -329,7 +370,7 @@ impl Daemon {
             Err(e) => {
                 eprintln!("recording failed: {e:#}");
                 self.sound.play(Cue::Error);
-                self.last = Some(Outcome::Error);
+                self.set_last(Outcome::Error);
                 self.set_phase(Phase::Idle);
             }
         }
@@ -343,7 +384,7 @@ impl Daemon {
         }
         if audible {
             self.sound.play(Cue::Cancel);
-            self.last = Some(Outcome::Cancelled);
+            self.set_last(Outcome::Cancelled);
         }
         self.set_phase(Phase::Idle);
     }
@@ -359,13 +400,18 @@ impl Daemon {
         if armed_for < min || audio::peak_rms(&samples) < SILENCE_RMS {
             self.generation.fetch_add(1, Ordering::SeqCst);
             self.sound.play(Cue::Cancel);
-            self.last = Some(Outcome::Empty);
+            self.set_last(Outcome::Empty);
             self.set_phase(Phase::Idle);
             return;
         }
         self.sound.play(Cue::Stop);
         self.set_phase(Phase::Processing);
         let _ = self.jobs.send(Job { generation: self.current(), samples });
+    }
+
+    fn set_last(&mut self, outcome: Outcome) {
+        self.last = Some(outcome);
+        self.last_at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
     }
 
     fn set_phase(&mut self, phase: Phase) {
@@ -398,9 +444,13 @@ impl Daemon {
     fn status(&self) -> serde_json::Value {
         json!({
             "ok": true,
+            "ready": self.ready.load(Ordering::SeqCst),
             "phase": self.phase,
-            "level": if self.phase == Phase::Recording { (self.level.get() * 100.0).round() / 100.0 } else { 0.0 },
+            "level": if self.phase == Phase::Recording { (self.level.get() as f64 * 100.0).round() / 100.0 } else { 0.0 },
             "last": self.last,
+            "last_at": self.last_at,
+            "sound": self.config.sound,
+            "volume": (self.config.volume as f64 * 100.0).round() / 100.0,
         })
     }
 

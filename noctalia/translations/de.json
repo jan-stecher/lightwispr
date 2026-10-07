@@ -1,0 +1,43 @@
+{
+  "title": "lightwispr",
+  "hint": "Strg+Super halten zum Diktieren",
+  "hint_cancel": "Esc bricht ab",
+  "status": {
+    "ready": "Bereit",
+    "loading": "Modell wird geladen…",
+    "listening": "Hört zu…",
+    "processing": "Wird transkribiert…",
+    "offline": "Dienst läuft nicht"
+  },
+  "result": {
+    "typed": "Eingefügt",
+    "clipboard": "In die Zwischenablage kopiert",
+    "empty": "Nichts gehört",
+    "cancelled": "Abgebrochen",
+    "error": "Etwas ist schiefgelaufen"
+  },
+  "history": {
+    "title": "Zuletzt",
+    "empty": "Noch nichts diktiert",
+    "clear": "Leeren",
+    "copied": "Kopiert",
+    "click": "Klicken zum Kopieren",
+    "typed": "eingefügt",
+    "clipboard": "kopiert"
+  },
+  "sound": {
+    "title": "Klang",
+    "enabled": "Interface-Sounds",
+    "volume": "Lautstärke"
+  },
+  "record": {
+    "start": "Diktat starten",
+    "stop": "Stoppen und transkribieren"
+  },
+  "time": {
+    "now": "gerade eben",
+    "min": "vor {n} Min.",
+    "hour": "vor {n} Std.",
+    "day": "vor {n} T."
+  }
+}

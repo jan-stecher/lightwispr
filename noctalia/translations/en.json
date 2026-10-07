@@ -1,0 +1,43 @@
+{
+  "title": "lightwispr",
+  "hint": "Hold Ctrl+Super to dictate",
+  "hint_cancel": "Esc cancels",
+  "status": {
+    "ready": "Ready",
+    "loading": "Loading model…",
+    "listening": "Listening…",
+    "processing": "Transcribing…",
+    "offline": "Service not running"
+  },
+  "result": {
+    "typed": "Typed",
+    "clipboard": "Copied to clipboard",
+    "empty": "Nothing heard",
+    "cancelled": "Cancelled",
+    "error": "Something went wrong"
+  },
+  "history": {
+    "title": "Recent",
+    "empty": "Nothing dictated yet",
+    "clear": "Clear",
+    "copied": "Copied",
+    "click": "Click to copy",
+    "typed": "typed",
+    "clipboard": "copied"
+  },
+  "sound": {
+    "title": "Sounds",
+    "enabled": "Interface sounds",
+    "volume": "Volume"
+  },
+  "record": {
+    "start": "Start dictation",
+    "stop": "Stop and transcribe"
+  },
+  "time": {
+    "now": "just now",
+    "min": "{n} min ago",
+    "hour": "{n} h ago",
+    "day": "{n} d ago"
+  }
+}

@@ -1,6 +1,7 @@
 //! lightwispr: minimal local voice dictation for Linux.
 
 mod audio;
+mod config;
 mod daemon;
 mod deliver;
 mod hypr;
@@ -22,6 +23,9 @@ const USAGE: &str = "usage: lightwispr <command>
   cancel                 abort the current recording
   status                 print the state as JSON
   history                print the last transcriptions as JSON
+  clear-history          forget the stored transcriptions
+  sound on|off           UI sounds
+  volume <0..1>          UI sound volume
   quit                   stop the daemon
 
   sounds                 play all UI sounds (preview)
@@ -34,8 +38,8 @@ fn main() -> Result<()> {
     let arg = |i: usize| args.get(i).map(String::as_str);
     match arg(0) {
         Some("daemon") => daemon::run(),
-        Some(cmd @ ("ptt-down" | "ptt-up" | "toggle" | "cancel" | "status" | "history" | "quit")) => {
-            println!("{}", ipc::request(cmd)?);
+        Some("ptt-down" | "ptt-up" | "toggle" | "cancel" | "status" | "history" | "clear-history" | "sound" | "volume" | "quit") => {
+            println!("{}", ipc::request(&args.join(" "))?);
             Ok(())
         }
         Some("sounds") => cmd_sounds(),
@@ -53,7 +57,8 @@ fn main() -> Result<()> {
 }
 
 fn cmd_sounds() -> Result<()> {
-    let player = sound::Player::new(0.35);
+    let cfg = config::Config::load();
+    let player = sound::Player::new(cfg.volume, true);
     for cue in sound::Cue::ALL {
         eprintln!("{cue:?}");
         player.play(cue);
