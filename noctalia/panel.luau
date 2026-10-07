@@ -101,7 +101,7 @@ end
 
 local function historyRow(i, e)
   local justCopied = copiedAt[i] and noctalia.nowMs() - copiedAt[i] < 1500
-  local meta = C.ago(e.at) .. " · " .. noctalia.tr(e.delivered == "typed" and "history.typed" or "history.clipboard")
+  local meta = C.ago(e.at) .. " · " .. noctalia.tr((e.delivered == "typed" or e.delivered == "pasted") and "history.typed" or "history.clipboard")
   return ui.row({
     key = `h{i}-{e.at}`,
     gap = 10,

@@ -302,7 +302,7 @@ impl Daemon {
                             Ok((text, how)) => {
                                 self.remember(&text, how);
                                 match how {
-                                    Delivered::Typed => Outcome::Typed,
+                                    Delivered::Typed | Delivered::Pasted => Outcome::Typed,
                                     Delivered::Clipboard => Outcome::Clipboard,
                                 }
                             }
