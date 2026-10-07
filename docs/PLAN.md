@@ -14,7 +14,7 @@ Speak, release, and the text lands where your cursor is. Everything runs on your
 
 ```
 hotkey/bar ─▶ capture (PipeWire, 16 kHz mono, in memory)
-          ─▶ STT: Parakeet TDT 0.6B v3 (ONNX int8, CUDA → CPU fallback)
+          ─▶ STT: Parakeet TDT 0.6B v3 (ONNX int8, CPU)
           ─▶ [optional] enhance: small local LLM (llama.cpp, GGUF) with the mode's system prompt
           ─▶ deliver: commit into focused text field (input-method), else clipboard
           ─▶ history (ring buffer, 10)
@@ -23,7 +23,7 @@ hotkey/bar ─▶ capture (PipeWire, 16 kHz mono, in memory)
 ### STT
 
 - **Parakeet TDT 0.6B v3** (NVIDIA, CC-BY-4.0, 25 European languages, automatic language detection).
-  int8 ONNX ~650 MB, ~1–1.5 GB RAM on CPU, very fast on GPU.
+  int8 ONNX ~650 MB, ~1–1.5 GB RAM, CPU only.
 - **Language:** automatic, per recording (no setting needed). Switching language mid-sentence is weak.
 - **Later:** Whisper large-v3-turbo as an optional backend (99 languages, can pin a language).
 
@@ -99,15 +99,15 @@ hotkey/bar ─▶ capture (PipeWire, 16 kHz mono, in memory)
 ## Stack (Rust)
 
 - Audio in/out: `cpal` (or `pipewire` crate); resampling with `rubato`.
-- STT: `ort` (ONNX Runtime, CUDA EP) with Parakeet; check `transcribe-rs` (used by Handy) for reuse.
-- LLM: `llama-cpp-2` (CUDA feature).
+- STT: `transcribe-rs` (onnx feature, CPU), as used by Handy.
+- LLM: `llama-cpp-2` (CPU).
 - Wayland: `wayland-client` + `wayland-protocols-misc` (input-method-v2), `wl-clipboard-rs`.
 - IPC: tokio + Unix socket, `serde_json`.
 - Toolchain via mise (`mise use rust` in the repo); `target/` gets `nosnap`.
 
 ## Milestones
 
-1. **Prototype:** record → Parakeet → print (CLI). Measure RAM/latency on CPU and GPU.
+1. **Prototype:** record → Parakeet → print (CLI). Measure RAM/latency. ✅
 2. **Delivery:** input-method commit + clipboard fallback. Test in GTK, Chrome, Brave, kitty, Warp.
 3. **Daemon + hotkeys + sounds.**
 4. **Noctalia plugin** (widget + panel).
@@ -117,7 +117,7 @@ hotkey/bar ─▶ capture (PipeWire, 16 kHz mono, in memory)
 ## Open questions
 
 - Default enhancement model size (0.6B vs 1.7B): decide after measuring quality on German.
-- GPU: CPU is already fast (see below); CUDA adds several GB of runtime libs. Decide whether GPU stays opt-in.
+- GPU: **decided 2026-10-07: CPU only, no GPU backend** (fast enough, keeps it light).
 
 ## Prototype results (2026-10-07, i9-9900K, CPU only, int8)
 

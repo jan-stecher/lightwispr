@@ -9,3 +9,5 @@ description = "Minimal local voice dictation for Linux (Wispr Flow alternative)"
 anyhow = "1.0.104"
 cpal = "0.18.2"
 transcribe-rs = { version = "0.3.12", features = ["onnx"] }
+wayland-client = "0.31.15"
+wayland-protocols-misc = { version = "0.3.12", features = ["client"] }

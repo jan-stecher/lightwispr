@@ -1,5 +1,8 @@
 //! lightwispr prototype: record from the default mic (or read a WAV), transcribe with Parakeet, print.
 
+mod deliver;
+mod ime;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -21,8 +24,14 @@ fn main() -> Result<()> {
             let path = args.get(1).context("usage: lightwispr transcribe <file.wav>")?;
             cmd_transcribe(Path::new(path))
         }
+        Some("ime-watch") => cmd_ime_watch(),
+        Some("deliver") => {
+            let delay: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let text = args.get(1).context("usage: lightwispr deliver <text> [delay-secs]")?;
+            cmd_deliver(text, delay)
+        }
         _ => {
-            eprintln!("usage: lightwispr record | transcribe <file.wav>");
+            eprintln!("usage: lightwispr record | transcribe <file.wav> | ime-watch | deliver <text> [delay-secs]");
             std::process::exit(2);
         }
     }
@@ -81,6 +90,24 @@ fn cmd_record() -> Result<()> {
         }
         println!("{}", transcribe(&mut model, &samples)?);
     }
+}
+
+/// Prints when text fields gain/lose focus, to check which apps support text-input-v3.
+fn cmd_ime_watch() -> Result<()> {
+    let mut ime = ime::Ime::connect(true)?;
+    eprintln!("watching (focus text fields in other apps, Ctrl+C to stop); now: {}", if ime.is_active() { "focused" } else { "unfocused" });
+    loop {
+        ime.wait()?;
+    }
+}
+
+/// Delivers text after an optional delay (time to click into a field).
+fn cmd_deliver(text: &str, delay: u64) -> Result<()> {
+    let mut ime = ime::Ime::connect(false).map_err(|e| eprintln!("input method unavailable: {e:#}")).ok();
+    std::thread::sleep(std::time::Duration::from_secs(delay));
+    let how = deliver::deliver(ime.as_mut(), text)?;
+    eprintln!("{how:?}");
+    Ok(())
 }
 
 fn read_line() -> Result<String> {
