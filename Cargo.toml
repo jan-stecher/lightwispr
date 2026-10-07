@@ -4,14 +4,20 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "Minimal local voice dictation for Linux (Wispr Flow alternative)"
+repository = "https://github.com/jan-stecher/lightwispr"
+readme = "README.md"
+keywords = ["dictation", "speech-to-text", "wayland", "hyprland", "parakeet"]
+categories = ["accessibility", "command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.104"
 cpal = "0.18.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+sha2 = "0.11.0"
 toml = "1.1.6"
 transcribe-rs = { version = "0.3.12", features = ["onnx"] }
+ureq = "3.4.2"
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 wayland-protocols-misc = { version = "0.3.12", features = ["client"] }

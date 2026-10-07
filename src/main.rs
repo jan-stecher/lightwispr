@@ -8,6 +8,7 @@ mod hotkey;
 mod hypr;
 mod ime;
 mod ipc;
+mod model;
 mod sound;
 mod stt;
 
@@ -19,6 +20,7 @@ use anyhow::{Context, Result, anyhow};
 const USAGE: &str = "usage: lightwispr <command>
 
   daemon                 run the background service
+  download-model         fetch the speech model (~670 MB, checksum-verified)
   ptt-down | ptt-up      push-to-talk key pressed / released (for the hotkey)
   toggle                 start or stop a recording
   cancel                 abort the current recording
@@ -40,7 +42,13 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = |i: usize| args.get(i).map(String::as_str);
     match arg(0) {
-        Some("daemon") => daemon::run(),
+        Some("daemon") => {
+            if !model::is_installed() {
+                eprintln!("model missing: run `lightwispr download-model` first");
+            }
+            daemon::run()
+        }
+        Some("download-model") => model::download(),
         Some("ptt-down" | "ptt-up" | "toggle" | "cancel" | "status" | "history" | "clear-history" | "power" | "hotkey" | "sound" | "volume" | "quit") => {
             println!("{}", ipc::request(&args.join(" "))?);
             Ok(())
