@@ -30,7 +30,18 @@ pub fn find(id: &str) -> Option<&'static Preset> {
 /// releasing the key finishes, any other key cancels. Both submap binds leave the
 /// submap themselves, so the keyboard can never get stuck, even without the daemon.
 pub fn register(preset: &Preset) -> bool {
-    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "lightwispr".into());
+    // Runtime binds survive a daemon restart (only a config reload drops them), so
+    // don't stack a second set on top. Never `hl.unbind` bare keys: that would also
+    // remove the user's own Super_L/Alt_L binds.
+    if registered() {
+        return true;
+    }
+    // argv[0] (e.g. ~/.local/bin/lightwispr) stays valid across rebuilds; /proc/self/exe doesn't.
+    let exe = std::env::args()
+        .next()
+        .filter(|a| a.starts_with('/'))
+        .or_else(|| std::env::current_exe().ok().map(|p| p.display().to_string()))
+        .unwrap_or_else(|| "lightwispr".into());
     let mut lua = format!(
         "local lw = {exe:?} .. ' '\n\
          local function leave(cmd) return function() hl.dispatch(hl.dsp.submap('reset')); hl.exec_cmd(lw .. cmd) end end\n"
@@ -54,6 +65,19 @@ pub fn register(preset: &Preset) -> bool {
     }
     lua += "  hl.bind('catchall', leave('cancel'), { description = 'Dictation: any other key cancels' })\nend)\n";
     hyprctl(&["eval", &lua])
+}
+
+/// Our binds are recognisable by their "Dictation:" descriptions.
+fn registered() -> bool {
+    Command::new("hyprctl")
+        .args(["binds", "-j"])
+        .output()
+        .ok()
+        .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+        .and_then(|v| v.as_array().cloned())
+        .is_some_and(|binds| {
+            binds.iter().any(|b| b.get("description").and_then(|d| d.as_str()).is_some_and(|d| d.starts_with("Dictation:")))
+        })
 }
 
 /// Switching presets: reload the config (drops the old runtime binds); the daemon

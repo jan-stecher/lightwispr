@@ -105,6 +105,8 @@ struct Daemon {
     ready: Arc<AtomicBool>,
     /// The `ready` value the bar last saw in the state file.
     ready_written: bool,
+    /// Re-exec after the current reply (power off).
+    restart: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -175,6 +177,7 @@ pub fn run() -> Result<()> {
         config,
         ready,
         ready_written: false,
+        restart: false,
     };
     d.register_hotkey();
     // Recover from a crash mid-dictation.
@@ -281,6 +284,9 @@ impl Daemon {
                 Msg::Cmd(cmd, reply) => {
                     let r = self.command(&cmd);
                     let _ = reply.send(r);
+                    if self.restart {
+                        self.reexec();
+                    }
                 }
                 Msg::Reloaded => self.register_hotkey(),
                 Msg::MaxDuration(g) => {
@@ -388,7 +394,14 @@ impl Daemon {
                     }
                     self.config.enabled = on;
                     self.config.save();
-                    let _ = self.jobs.send(if on { Work::Load } else { Work::Unload });
+                    if on {
+                        let _ = self.jobs.send(Work::Load);
+                    } else {
+                        // Dropping the model leaves ONNX Runtime allocations behind (~250 MB
+                        // after real use). A fresh process in "off" mode is the only way to
+                        // really give that back, so restart right after replying.
+                        self.restart = true;
+                    }
                     self.write_state();
                 }
             }
@@ -502,6 +515,25 @@ impl Daemon {
         self.sound.play(Cue::Stop);
         self.set_phase(Phase::Processing);
         let _ = self.jobs.send(Work::Transcribe(Job { generation: self.current(), samples }));
+    }
+
+    /// Replaces this process with a fresh daemon (same PID, so systemd doesn't notice).
+    fn reexec(&mut self) {
+        use std::os::unix::process::CommandExt;
+        // Give the IPC thread a moment to deliver the reply.
+        std::thread::sleep(Duration::from_millis(150));
+        self.leave_submap();
+        // argv[0] survives a rebuilt binary; /proc/self/exe would point at "(deleted)".
+        let exe = std::env::args_os()
+            .next()
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| std::env::current_exe().ok())
+            .unwrap_or_else(|| PathBuf::from("lightwispr"));
+        let err = std::process::Command::new(&exe).arg("daemon").exec();
+        eprintln!("restart failed ({err}); unloading in place instead");
+        self.restart = false;
+        let _ = self.jobs.send(Work::Unload);
     }
 
     fn register_hotkey(&self) {
