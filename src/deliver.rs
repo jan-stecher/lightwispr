@@ -6,10 +6,12 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
 
 use crate::ime::Ime;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Delivered {
     Typed,
     Clipboard,
@@ -18,9 +20,9 @@ pub enum Delivered {
 /// How long to wait for a text field to regain focus (e.g. after a bar panel closes).
 const REFOCUS_GRACE: Duration = Duration::from_millis(300);
 
-pub fn deliver(ime: Option<&mut Ime>, text: &str) -> Result<Delivered> {
+pub fn deliver(ime: Option<&Ime>, text: &str) -> Result<Delivered> {
     if let Some(ime) = ime {
-        if ime.wait_active(REFOCUS_GRACE)? && !ime.is_secret() {
+        if ime.wait_typable(REFOCUS_GRACE) {
             ime.commit(text)?;
             return Ok(Delivered::Typed);
         }

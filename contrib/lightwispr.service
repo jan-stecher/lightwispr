@@ -1,0 +1,14 @@
+[Unit]
+Description=lightwispr dictation daemon
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=%h/.local/bin/lightwispr daemon
+Restart=on-failure
+RestartSec=2
+# Plenty for the ~0.7 GB model; stops a runaway from eating the machine.
+MemoryMax=3G
+
+[Install]
+WantedBy=graphical-session.target

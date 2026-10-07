@@ -1,201 +1,93 @@
-//! lightwispr prototype: record from the default mic (or read a WAV), transcribe with Parakeet, print.
+//! lightwispr: minimal local voice dictation for Linux.
 
+mod audio;
+mod daemon;
 mod deliver;
+mod hypr;
 mod ime;
+mod ipc;
+mod sound;
+mod stt;
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::path::Path;
+use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, SampleFormat};
-use transcribe_rs::onnx::Quantization;
-use transcribe_rs::onnx::parakeet::{ParakeetModel, ParakeetParams};
+use anyhow::{Context, Result, anyhow};
 
-const TARGET_RATE: u32 = 16_000;
-const MODEL_NAME: &str = "parakeet-tdt-0.6b-v3-int8";
+const USAGE: &str = "usage: lightwispr <command>
+
+  daemon                 run the background service
+  ptt-down | ptt-up      push-to-talk key pressed / released (for the hotkey)
+  toggle                 start or stop a recording
+  cancel                 abort the current recording
+  status                 print the state as JSON
+  history                print the last transcriptions as JSON
+  quit                   stop the daemon
+
+  sounds                 play all UI sounds (preview)
+  transcribe <file.wav>  transcribe a 16 kHz mono WAV and print the text
+  ime-watch              show when text fields gain/lose focus
+  deliver <text> [secs]  type <text> into the focused field (else clipboard) after a delay";
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.first().map(String::as_str) {
-        Some("record") => cmd_record(),
-        Some("transcribe") => {
-            let path = args.get(1).context("usage: lightwispr transcribe <file.wav>")?;
-            cmd_transcribe(Path::new(path))
+    let arg = |i: usize| args.get(i).map(String::as_str);
+    match arg(0) {
+        Some("daemon") => daemon::run(),
+        Some(cmd @ ("ptt-down" | "ptt-up" | "toggle" | "cancel" | "status" | "history" | "quit")) => {
+            println!("{}", ipc::request(cmd)?);
+            Ok(())
         }
+        Some("sounds") => cmd_sounds(),
+        Some("transcribe") => cmd_transcribe(Path::new(arg(1).context("usage: lightwispr transcribe <file.wav>")?)),
         Some("ime-watch") => cmd_ime_watch(),
         Some("deliver") => {
-            let delay: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
-            let text = args.get(1).context("usage: lightwispr deliver <text> [delay-secs]")?;
-            cmd_deliver(text, delay)
+            let text = arg(1).context("usage: lightwispr deliver <text> [delay-secs]")?;
+            cmd_deliver(text, arg(2).and_then(|s| s.parse().ok()).unwrap_or(0))
         }
         _ => {
-            eprintln!("usage: lightwispr record | transcribe <file.wav> | ime-watch | deliver <text> [delay-secs]");
+            eprintln!("{USAGE}");
             std::process::exit(2);
         }
     }
 }
 
-fn model_dir() -> PathBuf {
-    let data = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share"));
-    data.join("lightwispr/models").join(MODEL_NAME)
-}
-
-fn load_model() -> Result<ParakeetModel> {
-    let dir = model_dir();
-    let t = Instant::now();
-    let model = ParakeetModel::load(&dir, &Quantization::Int8)
-        .map_err(|e| anyhow!("loading model from {}: {e}", dir.display()))?;
-    eprintln!("model loaded in {:.2?} (RSS {})", t.elapsed(), rss());
-    Ok(model)
-}
-
-fn transcribe(model: &mut ParakeetModel, samples: &[f32]) -> Result<String> {
-    let secs = samples.len() as f64 / TARGET_RATE as f64;
-    let t = Instant::now();
-    let result = model
-        .transcribe_with(samples, &ParakeetParams::default())
-        .map_err(|e| anyhow!("transcription failed: {e}"))?;
-    let took = t.elapsed();
-    eprintln!(
-        "transcribed {secs:.1}s audio in {took:.2?} ({:.1}x real-time, peak RSS {})",
-        secs / took.as_secs_f64(),
-        peak_rss()
-    );
-    Ok(result.text.trim().to_string())
+fn cmd_sounds() -> Result<()> {
+    let player = sound::Player::new(0.35);
+    for cue in sound::Cue::ALL {
+        eprintln!("{cue:?}");
+        player.play(cue);
+        std::thread::sleep(Duration::from_millis(900));
+    }
+    Ok(())
 }
 
 fn cmd_transcribe(path: &Path) -> Result<()> {
     let samples = transcribe_rs::audio::read_wav_samples(path)
         .map_err(|e| anyhow!("reading {} (needs 16 kHz mono): {e}", path.display()))?;
-    let mut model = load_model()?;
-    println!("{}", transcribe(&mut model, &samples)?);
+    let t = Instant::now();
+    let mut stt = stt::Stt::load()?;
+    eprintln!("model loaded in {:.2?}", t.elapsed());
+    let t = Instant::now();
+    let text = stt.transcribe(&samples)?;
+    eprintln!("transcribed {:.1}s audio in {:.2?}", samples.len() as f64 / audio::TARGET_RATE as f64, t.elapsed());
+    println!("{text}");
     Ok(())
 }
 
-fn cmd_record() -> Result<()> {
-    let mut model = load_model()?;
-    loop {
-        eprint!("\n[Enter] start recording, [q Enter] quit: ");
-        if read_line()?.trim() == "q" {
-            return Ok(());
-        }
-        let samples = record_until_enter()?;
-        if samples.len() < TARGET_RATE as usize / 4 {
-            eprintln!("too short, skipped");
-            continue;
-        }
-        println!("{}", transcribe(&mut model, &samples)?);
-    }
-}
-
-/// Prints when text fields gain/lose focus, to check which apps support text-input-v3.
 fn cmd_ime_watch() -> Result<()> {
-    let mut ime = ime::Ime::connect(true)?;
+    let ime = ime::Ime::spawn(true)?;
     eprintln!("watching (focus text fields in other apps, Ctrl+C to stop); now: {}", if ime.is_active() { "focused" } else { "unfocused" });
-    loop {
-        ime.wait()?;
+    while !ime.is_gone() {
+        std::thread::sleep(Duration::from_millis(200));
     }
+    Ok(())
 }
 
-/// Delivers text after an optional delay (time to click into a field).
 fn cmd_deliver(text: &str, delay: u64) -> Result<()> {
-    let mut ime = ime::Ime::connect(false).map_err(|e| eprintln!("input method unavailable: {e:#}")).ok();
-    std::thread::sleep(std::time::Duration::from_secs(delay));
-    let how = deliver::deliver(ime.as_mut(), text)?;
+    let ime = ime::Ime::spawn(false).map_err(|e| eprintln!("input method unavailable: {e:#}")).ok();
+    std::thread::sleep(Duration::from_secs(delay));
+    let how = deliver::deliver(ime.as_ref(), text)?;
     eprintln!("{how:?}");
     Ok(())
-}
-
-fn read_line() -> Result<String> {
-    let mut s = String::new();
-    std::io::stdin().read_line(&mut s)?;
-    Ok(s)
-}
-
-/// Records mono audio from the default input until Enter, resampled to 16 kHz.
-fn record_until_enter() -> Result<Vec<f32>> {
-    let device = cpal::default_host()
-        .default_input_device()
-        .context("no input device")?;
-    let config = device.default_input_config()?;
-    let rate = config.sample_rate();
-    let channels = config.channels() as usize;
-    let buf: Arc<Mutex<Vec<f32>>> = Arc::default();
-
-    let err_fn = |e| eprintln!("stream error: {e}");
-    let stream = match config.sample_format() {
-        SampleFormat::F32 => build::<f32>(&device, &config.into(), channels, buf.clone(), err_fn)?,
-        SampleFormat::I16 => build::<i16>(&device, &config.into(), channels, buf.clone(), err_fn)?,
-        SampleFormat::I32 => build::<i32>(&device, &config.into(), channels, buf.clone(), err_fn)?,
-        f => bail!("unsupported sample format {f}"),
-    };
-    stream.play()?;
-    eprint!("recording ({rate} Hz, {channels} ch)... [Enter] stop ");
-    read_line()?;
-    drop(stream);
-
-    let mono = std::mem::take(&mut *buf.lock().unwrap());
-    Ok(resample(&mono, rate, TARGET_RATE))
-}
-
-fn build<T>(
-    device: &cpal::Device,
-    config: &cpal::StreamConfig,
-    channels: usize,
-    buf: Arc<Mutex<Vec<f32>>>,
-    err_fn: impl FnMut(cpal::Error) + Send + 'static,
-) -> Result<cpal::Stream>
-where
-    T: cpal::SizedSample,
-    f32: FromSample<T>,
-{
-    let stream = device.build_input_stream(
-        config.clone(),
-        move |data: &[T], _: &_| {
-            let mut out = buf.lock().unwrap();
-            out.extend(
-                data.chunks(channels)
-                    .map(|frame| frame.iter().map(|s| s.to_sample::<f32>()).sum::<f32>() / channels as f32),
-            );
-        },
-        err_fn,
-        None,
-    )?;
-    Ok(stream)
-}
-
-/// Box-filtered linear resampling. Good enough for speech; replaced by a proper resampler later.
-fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
-    if from == to || input.is_empty() {
-        return input.to_vec();
-    }
-    let ratio = from as f64 / to as f64;
-    let half = (ratio / 2.0).floor() as isize;
-    let out_len = (input.len() as f64 / ratio) as usize;
-    (0..out_len)
-        .map(|i| {
-            let center = (i as f64 * ratio) as isize;
-            let (lo, hi) = ((center - half).max(0) as usize, ((center + half) as usize).min(input.len() - 1));
-            input[lo..=hi].iter().sum::<f32>() / (hi - lo + 1) as f32
-        })
-        .collect()
-}
-
-fn proc_status(key: &str) -> String {
-    std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|s| s.lines().find(|l| l.starts_with(key)).map(|l| l[key.len()..].trim().to_string()))
-        .unwrap_or_default()
-}
-
-fn rss() -> String {
-    proc_status("VmRSS:")
-}
-
-fn peak_rss() -> String {
-    proc_status("VmHWM:")
 }

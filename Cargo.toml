@@ -8,6 +8,8 @@ description = "Minimal local voice dictation for Linux (Wispr Flow alternative)"
 [dependencies]
 anyhow = "1.0.104"
 cpal = "0.18.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 transcribe-rs = { version = "0.3.12", features = ["onnx"] }
 wayland-client = "0.31.15"
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
