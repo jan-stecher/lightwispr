@@ -1,11 +1,13 @@
 //! UI sounds, synthesized at startup (no sample files, nothing to license).
 //!
-//! The character aims at a clean, "creamy" ceramic keycap: a soft rounded thock in the
-//! low mids, a few inharmonic ceramic partials that die out quickly, and a muffled
-//! (low-passed) contact transient instead of a sharp click.
+//! Clean ceramic taps: a pure tone with a soft octave and one inharmonic "ceramic"
+//! partial, a rounded sub-body, a smooth raised-cosine attack and a slight pitch settle.
+//! No noise, no saturation. Cues are short two-note gestures (up = listening,
+//! down = done) so they read instantly without being musical jingles.
 //!
 //! The output stream is opened on demand and closed after a short idle time.
 
+use std::f32::consts::{PI, TAU};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -25,67 +27,68 @@ impl Cue {
     pub const ALL: [Cue; 4] = [Cue::Start, Cue::Stop, Cue::Cancel, Cue::Error];
 }
 
-/// One keycap hit. `pitch` scales all frequencies, `gain` the loudness.
+/// One tap: when (s), base frequency (Hz), loudness.
 #[derive(Clone, Copy)]
-struct Hit {
+struct Tap {
     at: f32,
-    pitch: f32,
+    freq: f32,
     gain: f32,
 }
 
-fn hits(cue: Cue) -> Vec<Hit> {
+fn taps(cue: Cue) -> Vec<Tap> {
     match cue {
-        // Slightly brighter: "I'm listening".
-        Cue::Start => vec![Hit { at: 0.0, pitch: 1.12, gain: 0.9 }],
-        // Rounder and lower: "done, sending".
-        Cue::Stop => vec![Hit { at: 0.0, pitch: 0.86, gain: 1.0 }],
-        // Two soft taps stepping down: "never mind".
-        Cue::Cancel => vec![
-            Hit { at: 0.0, pitch: 0.95, gain: 0.6 },
-            Hit { at: 0.075, pitch: 0.78, gain: 0.5 },
-        ],
+        // Rising fourth B5 → E6: "listening".
+        Cue::Start => vec![Tap { at: 0.0, freq: 987.8, gain: 0.75 }, Tap { at: 0.06, freq: 1318.5, gain: 0.9 }],
+        // Falling fourth E6 → B5: "got it".
+        Cue::Stop => vec![Tap { at: 0.0, freq: 1318.5, gain: 0.75 }, Tap { at: 0.06, freq: 987.8, gain: 0.9 }],
+        // Lower, quieter fall: "never mind".
+        Cue::Cancel => vec![Tap { at: 0.0, freq: 784.0, gain: 0.55 }, Tap { at: 0.07, freq: 587.3, gain: 0.5 }],
         // Low double knock.
-        Cue::Error => vec![
-            Hit { at: 0.0, pitch: 0.62, gain: 0.8 },
-            Hit { at: 0.11, pitch: 0.62, gain: 0.7 },
-        ],
+        Cue::Error => vec![Tap { at: 0.0, freq: 392.0, gain: 0.8 }, Tap { at: 0.13, freq: 392.0, gain: 0.7 }],
     }
 }
 
+/// (frequency multiple, amplitude, decay time constant in s)
+const PARTIALS: [(f32, f32, f32); 4] = [
+    (1.0, 1.0, 0.050),  // the tone
+    (2.0, 0.16, 0.022), // octave: clarity
+    (2.76, 0.07, 0.012), // inharmonic: the ceramic "tick"
+    (0.5, 0.22, 0.030), // sub: rounded body, no boom
+];
+const ATTACK: f32 = 0.002;
+const TAIL: f32 = 0.22;
+
 fn render(cue: Cue, rate: u32, volume: f32) -> Vec<f32> {
-    let hits = hits(cue);
-    let len_s = hits.iter().map(|h| h.at).fold(0.0, f32::max) + 0.12;
+    let taps = taps(cue);
+    let len_s = taps.iter().map(|t| t.at).fold(0.0, f32::max) + TAIL;
     let n = (len_s * rate as f32) as usize;
     let mut out = vec![0.0f32; n];
-    let mut seed = 0x9E37_79B9u32;
-    for h in hits {
-        let off = (h.at * rate as f32) as usize;
-        let mut lp = 0.0f32; // one-pole low-pass state for the transient
+    for tap in taps {
+        let off = (tap.at * rate as f32) as usize;
+        let mut phase = [0.0f32; PARTIALS.len()];
         for i in 0..n - off {
             let t = i as f32 / rate as f32;
-            // ~0.6 ms attack so nothing clicks.
-            let attack = (t / 0.0006).min(1.0);
-            // Body: the rounded "thock" (low mids, quick decay).
-            let body = (std::f32::consts::TAU * 230.0 * h.pitch * t).sin() * (-t / 0.016).exp() * 0.9;
-            // Ceramic partials: inharmonic, short, glassy but soft.
-            let f0 = 1450.0 * h.pitch;
-            let ceramic = [(1.0, 0.42, 0.022), (1.47, 0.22, 0.015), (2.09, 0.10, 0.009)]
-                .iter()
-                .map(|(m, a, d)| (std::f32::consts::TAU * f0 * m * t).sin() * a * (-t / d).exp())
-                .sum::<f32>();
-            // Contact transient: noise, heavily low-passed ("muffled").
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            let noise = (seed as f32 / u32::MAX as f32) * 2.0 - 1.0;
-            lp += (noise - lp) * 0.18;
-            let transient = lp * (-t / 0.0025).exp() * 0.9;
-            out[off + i] += (body + ceramic + transient) * attack * h.gain;
+            // Raised-cosine attack: no click, still crisp.
+            let attack = if t < ATTACK { 0.5 - 0.5 * (PI * t / ATTACK).cos() } else { 1.0 };
+            // Settles 1.5% downwards in the first 30 ms, like a struck object.
+            let f = tap.freq * (1.0 + 0.015 * (-t / 0.03).exp());
+            let mut v = 0.0;
+            for (k, (mult, amp, decay)) in PARTIALS.iter().enumerate() {
+                phase[k] += TAU * f * mult / rate as f32;
+                v += phase[k].sin() * amp * (-t / decay).exp();
+            }
+            out[off + i] += v * attack * tap.gain;
         }
     }
-    // Gentle saturation keeps it round, then master volume.
+    // Normalize, then set each cue's loudness (cancel stays in the background).
+    let level = match cue {
+        Cue::Start | Cue::Stop => 0.8,
+        Cue::Cancel => 0.55,
+        Cue::Error => 0.7,
+    };
+    let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs())).max(1e-6);
     for s in &mut out {
-        *s = (*s * 0.8).tanh() * volume;
+        *s = *s / peak * level * volume;
     }
     out
 }
