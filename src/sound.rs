@@ -1,9 +1,10 @@
 //! UI sounds, synthesized at startup (no sample files, nothing to license).
 //!
-//! Clean ceramic taps: a pure tone with a soft octave and one inharmonic "ceramic"
-//! partial, a rounded sub-body, a smooth raised-cosine attack and a slight pitch settle.
-//! No noise, no saturation. Cues are short two-note gestures (up = listening,
-//! down = done) so they read instantly without being musical jingles.
+//! Modelled on a creamy, clonky ceramic keyboard: each stroke is a handful of damped
+//! resonances (modal synthesis) excited by an instant hit — a hollow, woody body around
+//! 480 Hz that dies within ~20 ms, two short ceramic modes above it, and a tiny tick of
+//! the cap bottoming out. Very short decays make it a knock, not a tone. No noise, no
+//! saturation.
 //!
 //! The output stream is opened on demand and closed after a short idle time.
 
@@ -27,64 +28,70 @@ impl Cue {
     pub const ALL: [Cue; 4] = [Cue::Start, Cue::Stop, Cue::Cancel, Cue::Error];
 }
 
-/// One tap: when (s), base frequency (Hz), loudness.
+/// One keystroke: when (s), pitch scale, loudness, and whether it's the softer,
+/// brighter up-stroke of a released key.
 #[derive(Clone, Copy)]
-struct Tap {
+struct Stroke {
     at: f32,
-    freq: f32,
+    pitch: f32,
     gain: f32,
+    up: bool,
 }
 
-fn taps(cue: Cue) -> Vec<Tap> {
+const fn down(at: f32, pitch: f32, gain: f32) -> Stroke {
+    Stroke { at, pitch, gain, up: false }
+}
+
+const fn up(at: f32, pitch: f32, gain: f32) -> Stroke {
+    Stroke { at, pitch, gain, up: true }
+}
+
+fn strokes(cue: Cue) -> Vec<Stroke> {
     match cue {
-        // Rising fourth B5 → E6: "listening".
-        Cue::Start => vec![Tap { at: 0.0, freq: 987.8, gain: 0.75 }, Tap { at: 0.06, freq: 1318.5, gain: 0.9 }],
-        // Falling fourth E6 → B5: "got it".
-        Cue::Stop => vec![Tap { at: 0.0, freq: 1318.5, gain: 0.75 }, Tap { at: 0.06, freq: 987.8, gain: 0.9 }],
-        // Lower, quieter fall: "never mind".
-        Cue::Cancel => vec![Tap { at: 0.0, freq: 784.0, gain: 0.55 }, Tap { at: 0.07, freq: 587.3, gain: 0.5 }],
+        // A single crisp key press: "listening".
+        Cue::Start => vec![down(0.0, 1.12, 1.0)],
+        // Press and release of a slightly deeper key: "got it, sending".
+        Cue::Stop => vec![down(0.0, 0.94, 1.0), up(0.058, 1.0, 0.32)],
+        // Two soft, low taps: "never mind".
+        Cue::Cancel => vec![down(0.0, 0.88, 0.6), down(0.075, 0.76, 0.5)],
         // Low double knock.
-        Cue::Error => vec![Tap { at: 0.0, freq: 392.0, gain: 0.8 }, Tap { at: 0.13, freq: 392.0, gain: 0.7 }],
+        Cue::Error => vec![down(0.0, 0.62, 0.9), down(0.12, 0.62, 0.8)],
     }
 }
 
-/// (frequency multiple, amplitude, decay time constant in s)
-const PARTIALS: [(f32, f32, f32); 4] = [
-    (1.0, 1.0, 0.050),  // the tone
-    (2.0, 0.16, 0.022), // octave: clarity
-    (2.76, 0.07, 0.012), // inharmonic: the ceramic "tick"
-    (0.5, 0.22, 0.030), // sub: rounded body, no boom
+/// Resonant modes of the down-stroke: (Hz, amplitude, decay time constant in s).
+const MODES: [(f32, f32, f32); 4] = [
+    (480.0, 1.00, 0.018),  // hollow, woody body: the "clonk"
+    (1130.0, 0.42, 0.009), // case/plate
+    (2650.0, 0.20, 0.0045), // ceramic cap
+    (4300.0, 0.09, 0.0022), // bottom-out tick
 ];
-const ATTACK: f32 = 0.002;
-const TAIL: f32 = 0.22;
+const ATTACK: f32 = 0.0004;
+const TAIL: f32 = 0.12;
 
 fn render(cue: Cue, rate: u32, volume: f32) -> Vec<f32> {
-    let taps = taps(cue);
-    let len_s = taps.iter().map(|t| t.at).fold(0.0, f32::max) + TAIL;
+    let strokes = strokes(cue);
+    let len_s = strokes.iter().map(|s| s.at).fold(0.0, f32::max) + TAIL;
     let n = (len_s * rate as f32) as usize;
     let mut out = vec![0.0f32; n];
-    for tap in taps {
-        let off = (tap.at * rate as f32) as usize;
-        let mut phase = [0.0f32; PARTIALS.len()];
+    for st in strokes {
+        let off = (st.at * rate as f32) as usize;
         for i in 0..n - off {
             let t = i as f32 / rate as f32;
-            // Raised-cosine attack: no click, still crisp.
             let attack = if t < ATTACK { 0.5 - 0.5 * (PI * t / ATTACK).cos() } else { 1.0 };
-            // Settles 1.5% downwards in the first 30 ms, like a struck object.
-            let f = tap.freq * (1.0 + 0.015 * (-t / 0.03).exp());
             let mut v = 0.0;
-            for (k, (mult, amp, decay)) in PARTIALS.iter().enumerate() {
-                phase[k] += TAU * f * mult / rate as f32;
-                v += phase[k].sin() * amp * (-t / decay).exp();
+            for (k, (freq, amp, decay)) in MODES.iter().enumerate() {
+                // The up-stroke has no body thump: mostly cap and tick, a bit shorter.
+                let (amp, decay) = if st.up { (if k == 0 { amp * 0.25 } else { amp * 1.3 }, decay * 0.7) } else { (*amp, *decay) };
+                v += (TAU * freq * st.pitch * t).sin() * amp * (-t / decay).exp();
             }
-            out[off + i] += v * attack * tap.gain;
+            out[off + i] += v * attack * st.gain;
         }
     }
-    // Normalize, then set each cue's loudness (cancel stays in the background).
     let level = match cue {
-        Cue::Start | Cue::Stop => 0.8,
-        Cue::Cancel => 0.55,
-        Cue::Error => 0.7,
+        Cue::Start | Cue::Stop => 0.85,
+        Cue::Cancel => 0.6,
+        Cue::Error => 0.75,
     };
     let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs())).max(1e-6);
     for s in &mut out {
