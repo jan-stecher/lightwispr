@@ -1,7 +1,8 @@
 //! Puts text where the user is:
 //! 1. a focused text field that speaks text-input-v3 → committed directly (input method),
-//! 2. an XWayland window (no input-method support) → clipboard + paste shortcut sent by
-//!    Hyprland, then the previous clipboard text is restored,
+//! 2. an XWayland window, or a native app known to lack input-method support
+//!    (PASTE_APPS) → clipboard + paste shortcut sent by Hyprland, then the previous
+//!    clipboard text is restored,
 //! 3. anything else (no text field) → left on the clipboard.
 //!
 //! Password/PIN fields never get typed into (clipboard instead).
@@ -29,6 +30,10 @@ const REFOCUS_GRACE: Duration = Duration::from_millis(300);
 const BEFORE_PASTE: Duration = Duration::from_millis(60);
 /// XWayland reads the selection on demand; restoring too early would paste the old text.
 const BEFORE_RESTORE: Duration = Duration::from_millis(900);
+
+/// Native Wayland apps that ignore input methods but accept a paste shortcut.
+/// Warp: winit IME is never enabled on Linux (warpdotdev/warp#9383).
+const PASTE_APPS: &[&str] = &["dev.warp.warp"];
 
 /// Terminals paste with Ctrl+Shift+V (Ctrl+V is a control character there).
 const TERMINALS: &[&str] = &[
@@ -58,7 +63,7 @@ pub fn deliver(ime: Option<&Ime>, text: &str) -> Result<Delivered> {
         }
     }
     if let Some(win) = active_window() {
-        if win.xwayland {
+        if win.xwayland || PASTE_APPS.contains(&win.class.to_lowercase().as_str()) {
             paste(text, &win.class)?;
             return Ok(Delivered::Pasted);
         }
