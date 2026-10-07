@@ -539,6 +539,7 @@ dependencies = [
  "cpal",
  "transcribe-rs",
  "wayland-client",
+ "wayland-protocols",
  "wayland-protocols-misc",
 ]
 

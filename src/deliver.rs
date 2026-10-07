@@ -1,4 +1,5 @@
 //! Puts text where the user is: into the focused text field, otherwise on the clipboard.
+//! Password/PIN fields never get typed into (clipboard instead).
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -19,7 +20,7 @@ const REFOCUS_GRACE: Duration = Duration::from_millis(300);
 
 pub fn deliver(ime: Option<&mut Ime>, text: &str) -> Result<Delivered> {
     if let Some(ime) = ime {
-        if ime.wait_active(REFOCUS_GRACE)? {
+        if ime.wait_active(REFOCUS_GRACE)? && !ime.is_secret() {
             ime.commit(text)?;
             return Ok(Delivered::Typed);
         }

@@ -10,4 +10,5 @@ anyhow = "1.0.104"
 cpal = "0.18.2"
 transcribe-rs = { version = "0.3.12", features = ["onnx"] }
 wayland-client = "0.31.15"
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 wayland-protocols-misc = { version = "0.3.12", features = ["client"] }

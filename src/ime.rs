@@ -15,6 +15,9 @@ struct State {
     /// Double-buffered: activate/deactivate set `pending`, `done` applies it.
     pending_active: bool,
     active: bool,
+    /// Password/PIN field: never type into it.
+    pending_secret: bool,
+    secret: bool,
     /// Number of `done` events received; `commit` must echo it.
     serial: u32,
     unavailable: bool,
@@ -73,6 +76,11 @@ impl Ime {
         self.state.active
     }
 
+    /// The focused field is a password/PIN or marked sensitive.
+    pub fn is_secret(&self) -> bool {
+        self.state.secret
+    }
+
     /// Waits up to `timeout` for a text field to become focused (e.g. after a panel closes).
     pub fn wait_active(&mut self, timeout: Duration) -> Result<bool> {
         let end = Instant::now() + timeout;
@@ -111,7 +119,10 @@ impl Dispatch<ZwpInputMethodV2, ()> for State {
     ) {
         use zwp_input_method_v2::Event;
         match event {
-            Event::Activate => state.pending_active = true,
+            Event::Activate => {
+                state.pending_active = true;
+                state.pending_secret = false;
+            }
             Event::Deactivate => state.pending_active = false,
             Event::Done => {
                 state.serial += 1;
@@ -119,9 +130,17 @@ impl Dispatch<ZwpInputMethodV2, ()> for State {
                     eprintln!("text field {}", if state.pending_active { "focused" } else { "unfocused" });
                 }
                 state.active = state.pending_active;
+                state.secret = state.pending_secret;
             }
-            Event::ContentType { hint, purpose } if state.verbose => {
-                eprintln!("  content type: purpose={purpose:?} hint={hint:?}")
+            Event::ContentType { hint, purpose } => {
+                use wayland_client::WEnum;
+                use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{ContentHint, ContentPurpose};
+                let secret_purpose = matches!(purpose, WEnum::Value(ContentPurpose::Password | ContentPurpose::Pin));
+                let secret_hint = matches!(hint, WEnum::Value(h) if h.contains(ContentHint::SensitiveData));
+                state.pending_secret = secret_purpose || secret_hint;
+                if state.verbose {
+                    eprintln!("  content type: purpose={purpose:?} hint={hint:?}");
+                }
             }
             Event::Unavailable => state.unavailable = true,
             _ => {}
