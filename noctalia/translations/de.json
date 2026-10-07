@@ -7,7 +7,8 @@
     "loading": "Modell wird geladen…",
     "listening": "Hört zu…",
     "processing": "Wird transkribiert…",
-    "offline": "Dienst läuft nicht"
+    "offline": "Dienst läuft nicht",
+    "off": "Aus · Speicher freigegeben"
   },
   "result": {
     "typed": "Eingefügt",
@@ -41,5 +42,6 @@
     "day": "vor {n} T."
   },
   "key": "Strg rechts",
-  "hint_hold": "halten zum Sprechen"
+  "hint_hold": "halten zum Sprechen",
+  "power": "An / aus (aus gibt den RAM des Modells frei)"
 }

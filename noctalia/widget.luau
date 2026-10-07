@@ -55,6 +55,9 @@ local function tooltip(state)
   if not alive or state == nil then
     return noctalia.tr("status.offline")
   end
+  if state.enabled == false then
+    return noctalia.tr("status.off")
+  end
   if not state.ready then
     return noctalia.tr("status.loading")
   end
@@ -66,7 +69,7 @@ local function render()
   local fast = false
   local tree
 
-  if state == nil or not alive then
+  if state == nil or not alive or state.enabled == false then
     tree = frame({ ui.glyph({ name = "microphone-off", size = 16, color = "on_surface_variant" }) })
   elseif state.phase == "recording" then
     tree = meterTree(state.level or 0)

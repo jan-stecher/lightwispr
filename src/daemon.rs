@@ -87,7 +87,7 @@ struct Entry {
 
 struct Daemon {
     tx: Sender<Msg>,
-    jobs: Sender<Job>,
+    jobs: Sender<Work>,
     sound: Player,
     level: Level,
     phase: Phase,
@@ -101,7 +101,7 @@ struct Daemon {
     in_submap: bool,
     config: Config,
     ready: Arc<AtomicBool>,
-    /// The bar has seen `ready: true` (state file written after the model loaded).
+    /// The `ready` value the bar last saw in the state file.
     ready_written: bool,
 }
 
@@ -151,6 +151,9 @@ pub fn run() -> Result<()> {
     }
 
     let config = Config::load();
+    if config.enabled {
+        let _ = jobs.send(Work::Load);
+    }
     let mut d = Daemon {
         tx,
         jobs,
@@ -198,39 +201,71 @@ fn accept_loop(listener: UnixListener, tx: Sender<Msg>) {
     }
 }
 
-fn spawn_stt_worker(tx: Sender<Msg>, generation: Arc<AtomicU64>, ime: Option<Arc<Ime>>, ready: Arc<AtomicBool>) -> Sender<Job> {
-    let (jtx, jrx) = mpsc::channel::<Job>();
+enum Work {
+    Transcribe(Job),
+    /// Load the model (power on).
+    Load,
+    /// Drop the model and hand its memory back to the OS (power off).
+    Unload,
+}
+
+fn spawn_stt_worker(tx: Sender<Msg>, generation: Arc<AtomicU64>, ime: Option<Arc<Ime>>, ready: Arc<AtomicBool>) -> Sender<Work> {
+    let (wtx, wrx) = mpsc::channel::<Work>();
     std::thread::Builder::new()
         .name("stt".into())
         .spawn(move || {
-            let t = Instant::now();
-            let mut stt = match Stt::load() {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("{e:#}");
-                    // Keep answering jobs with the error so the UI can show it.
-                    for job in jrx {
-                        let _ = tx.send(Msg::Done(job.generation, Err(anyhow::anyhow!("model not loaded"))));
+            let mut stt: Option<Stt> = None;
+            for work in wrx {
+                match work {
+                    Work::Load if stt.is_none() => {
+                        let t = Instant::now();
+                        match Stt::load() {
+                            Ok(m) => {
+                                eprintln!("model loaded in {:.2?}", t.elapsed());
+                                stt = Some(m);
+                                ready.store(true, Ordering::SeqCst);
+                            }
+                            Err(e) => eprintln!("{e:#}"),
+                        }
+                        let _ = tx.send(Msg::Tick);
                     }
-                    return;
+                    Work::Load => {}
+                    Work::Unload => {
+                        if stt.take().is_some() {
+                            ready.store(false, Ordering::SeqCst);
+                            release_memory();
+                            eprintln!("model unloaded");
+                        }
+                        let _ = tx.send(Msg::Tick);
+                    }
+                    Work::Transcribe(job) => {
+                        let result = match stt.as_mut() {
+                            None => Err(anyhow::anyhow!("model not loaded")),
+                            Some(stt) => stt.transcribe(&job.samples).and_then(|text| {
+                                if text.is_empty() || generation.load(Ordering::SeqCst) != job.generation {
+                                    return Ok((text, Delivered::Clipboard));
+                                }
+                                let how = deliver::deliver(ime.as_deref(), &text)?;
+                                Ok((text, how))
+                            }),
+                        };
+                        let _ = tx.send(Msg::Done(job.generation, result));
+                    }
                 }
-            };
-            eprintln!("model loaded in {:.2?}", t.elapsed());
-            ready.store(true, Ordering::SeqCst);
-            let _ = tx.send(Msg::Tick);
-            for job in jrx {
-                let result = stt.transcribe(&job.samples).and_then(|text| {
-                    if text.is_empty() || generation.load(Ordering::SeqCst) != job.generation {
-                        return Ok((text, Delivered::Clipboard));
-                    }
-                    let how = deliver::deliver(ime.as_deref(), &text)?;
-                    Ok((text, how))
-                });
-                let _ = tx.send(Msg::Done(job.generation, result));
             }
         })
         .expect("spawn stt thread");
-    jtx
+    wtx
+}
+
+/// glibc keeps freed heap pages around; ask it to return them so "off" really frees RAM.
+fn release_memory() {
+    unsafe extern "C" {
+        fn malloc_trim(pad: usize) -> i32;
+    }
+    unsafe {
+        malloc_trim(0);
+    }
 }
 
 impl Daemon {
@@ -282,8 +317,9 @@ impl Daemon {
                     }
                 }
                 Msg::Tick => {
-                    if self.phase == Phase::Recording || !self.ready_written {
-                        self.ready_written = self.ready.load(Ordering::SeqCst);
+                    let ready = self.ready.load(Ordering::SeqCst);
+                    if self.phase == Phase::Recording || ready != self.ready_written {
+                        self.ready_written = ready;
                         self.write_state();
                     }
                 }
@@ -301,7 +337,7 @@ impl Daemon {
         let arg = parts.next();
         match cmd {
             "ptt-down" => {
-                if self.phase == Phase::Idle {
+                if self.phase == Phase::Idle && self.config.enabled {
                     self.begin(Trigger::Ptt);
                 }
             }
@@ -311,6 +347,7 @@ impl Daemon {
                 _ => {}
             },
             "toggle" => match self.phase {
+                Phase::Idle if !self.config.enabled => {}
                 Phase::Idle => self.begin(Trigger::Toggle),
                 Phase::Armed | Phase::Recording => self.finish(),
                 Phase::Processing => {}
@@ -328,6 +365,26 @@ impl Daemon {
             },
             "status" => {}
             "history" => return serde_json::to_string(&load_history()).unwrap_or_default(),
+            "power" => {
+                let on = match arg {
+                    Some("on") => true,
+                    Some("off") => false,
+                    _ => !self.config.enabled,
+                };
+                if on != self.config.enabled {
+                    if !on {
+                        match self.phase {
+                            Phase::Armed => self.discard(false),
+                            Phase::Recording => self.discard(true),
+                            _ => {}
+                        }
+                    }
+                    self.config.enabled = on;
+                    self.config.save();
+                    let _ = self.jobs.send(if on { Work::Load } else { Work::Unload });
+                    self.write_state();
+                }
+            }
             "clear-history" => {
                 let _ = std::fs::remove_file(history_path());
             }
@@ -422,7 +479,7 @@ impl Daemon {
         }
         self.sound.play(Cue::Stop);
         self.set_phase(Phase::Processing);
-        let _ = self.jobs.send(Job { generation: self.current(), samples });
+        let _ = self.jobs.send(Work::Transcribe(Job { generation: self.current(), samples }));
     }
 
     fn set_last(&mut self, outcome: Outcome) {
@@ -465,6 +522,7 @@ impl Daemon {
     fn status(&self) -> serde_json::Value {
         json!({
             "ok": true,
+            "enabled": self.config.enabled,
             "ready": self.ready.load(Ordering::SeqCst),
             "phase": self.phase,
             "level": if self.phase == Phase::Recording { (self.level.get() as f64 * 100.0).round() / 100.0 } else { 0.0 },

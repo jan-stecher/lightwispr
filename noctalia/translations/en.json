@@ -7,7 +7,8 @@
     "loading": "Loading model…",
     "listening": "Listening…",
     "processing": "Transcribing…",
-    "offline": "Service not running"
+    "offline": "Service not running",
+    "off": "Off · memory freed"
   },
   "result": {
     "typed": "Typed",
@@ -41,5 +42,6 @@
     "day": "{n} d ago"
   },
   "key": "Right Ctrl",
-  "hint_hold": "hold to talk"
+  "hint_hold": "hold to talk",
+  "power": "On / off (off frees the model's RAM)"
 }

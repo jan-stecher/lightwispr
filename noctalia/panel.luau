@@ -14,6 +14,9 @@ local function statusText()
   if not alive or state == nil then
     return noctalia.tr("status.offline"), "on_surface_variant"
   end
+  if state.enabled == false then
+    return noctalia.tr("status.off"), "on_surface_variant"
+  end
   if not state.ready then
     return noctalia.tr("status.loading"), "on_surface_variant"
   end
@@ -55,14 +58,25 @@ local function header()
   local text, color = statusText()
   local recording = state and state.phase == "recording"
   local busy = state and state.phase == "processing"
-  local canRecord = alive and state ~= nil and state.ready and not busy
+  local on = alive and state ~= nil and state.enabled ~= false
+  local canRecord = on and state.ready and not busy
+  local accent = recording and "error" or (on and "primary" or "on_surface_variant")
   return ui.row({ gap = 12, align = "center" }, {
-    ui.row({ width = 44, height = 44, radius = 14, fill = (recording and "error" or "primary") .. "/0.14", align = "center", justify = "center" }, {
-      ui.glyph({ name = alive and "microphone" or "microphone-off", size = 22, color = recording and "error" or "primary" }),
+    ui.row({ width = 44, height = 44, radius = 14, fill = accent .. "/0.14", align = "center", justify = "center" }, {
+      ui.glyph({ name = on and "microphone" or "microphone-off", size = 22, color = accent }),
     }),
     ui.column({ gap = 1, flexGrow = 1, align = "start" }, {
       ui.label({ text = noctalia.tr("title"), fontSize = 17, fontWeight = "bold", color = "on_surface" }),
       ui.label({ text = text, fontSize = 12, color = color }),
+    }),
+    ui.column({ align = "center" }, {
+      ui.toggle({
+        checked = on,
+        enabled = alive and state ~= nil,
+        onChange = function(v)
+          C.run({ "power", v == "true" and "on" or "off" })
+        end,
+      }),
     }),
     ui.button({
       glyph = recording and "player-stop-filled" or "microphone",

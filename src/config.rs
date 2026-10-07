@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// Off = model unloaded (frees ~0.7 GB) and the hotkey does nothing.
+    pub enabled: bool,
     /// UI sounds on/off.
     pub sound: bool,
     /// UI sound volume 0..1.
@@ -16,7 +18,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { sound: true, volume: 0.35 }
+        Self { enabled: true, sound: true, volume: 0.35 }
     }
 }
 
