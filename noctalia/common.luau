@@ -52,6 +52,59 @@ function M.checkAlive(cb)
   noctalia.processMatches(cb, "lightwispr", "daemon")
 end
 
+-- ── Enhancement modes ────────────────────────────────────────────────────────
+-- The daemon lists them in state.catalog.modes ({ id, name, glyph }); built-in ones get
+-- translated names, your own files in ~/.config/lightwispr/modes/ keep theirs.
+
+local BUILTIN_MODES = { casual = true, formal = true, coding = true }
+
+function M.modes(state)
+  return (state and state.catalog and state.catalog.modes) or {}
+end
+
+function M.mode(state)
+  return (state and state.mode) or "off"
+end
+
+function M.modeName(state, id)
+  if id == "off" or BUILTIN_MODES[id] then
+    return noctalia.tr("mode." .. id)
+  end
+  for _, m in M.modes(state) do
+    if m.id == id then
+      return m.name
+    end
+  end
+  return id
+end
+
+function M.modeGlyph(state, id)
+  if id == "off" then
+    return "microphone"
+  end
+  for _, m in M.modes(state) do
+    if m.id == id then
+      return m.glyph or "sparkles"
+    end
+  end
+  return "sparkles"
+end
+
+-- The mode `dir` steps away from the current one, in the order off, modes…, wrapping.
+function M.stepMode(state, dir)
+  local ids = { "off" }
+  for _, m in M.modes(state) do
+    table.insert(ids, m.id)
+  end
+  local cur = 1
+  for i, id in ids do
+    if id == M.mode(state) then
+      cur = i
+    end
+  end
+  return ids[((cur - 1 + dir) % #ids) + 1]
+end
+
 function M.ago(unixSeconds)
   local s = os.time() - unixSeconds
   if s < 60 then

@@ -3,6 +3,9 @@
 //!
 //! A background thread keeps dispatching events, so the focus state is always current
 //! and the connection never backs up.
+//!
+//! Apps that support it also report the text around the cursor ("surrounding text", max.
+//! 4000 bytes): GTK, Qt, Firefox (paragraph), Chromium/Electron (±100 characters).
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -15,6 +18,17 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{ContentH
 use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_manager_v2::ZwpInputMethodManagerV2;
 use wayland_protocols_misc::zwp_input_method_v2::client::zwp_input_method_v2::{self, ZwpInputMethodV2};
 
+/// Text around the cursor as the app reports it; offsets are bytes into `text`.
+#[derive(Clone, Debug)]
+pub struct Surrounding {
+    pub text: String,
+    pub cursor: usize,
+    pub anchor: usize,
+}
+
+/// The protocol caps a committed string at 4000 bytes; longer text goes in several commits.
+const MAX_COMMIT: usize = 3800;
+
 #[derive(Default)]
 struct Focus {
     /// Applied on `done`.
@@ -23,6 +37,8 @@ struct Focus {
     secret: bool,
     /// Number of `done` events received; `commit` must echo it.
     serial: u32,
+    /// None when the app doesn't report it.
+    surrounding: Option<Surrounding>,
     /// The compositor dropped us (another input method, or the connection died).
     gone: bool,
 }
@@ -32,6 +48,9 @@ struct State {
     // Double-buffered until `done`.
     pending_active: bool,
     pending_secret: bool,
+    pending_surrounding: Option<Surrounding>,
+    /// A new field got focus: forget the old field's text on the next done.
+    pending_reset: bool,
     verbose: bool,
 }
 
@@ -53,7 +72,7 @@ impl Ime {
             .context("compositor has no zwp_input_method_manager_v2")?;
         let im = manager.get_input_method(&seat, &qh, ());
         let shared = Arc::new(Mutex::new(Focus::default()));
-        let mut state = State { shared: shared.clone(), pending_active: false, pending_secret: false, verbose };
+        let mut state = State { shared: shared.clone(), pending_active: false, pending_secret: false, pending_surrounding: None, pending_reset: false, verbose };
         queue.roundtrip(&mut state)?;
         if shared.lock().unwrap().gone {
             bail!("another input method is already running (fcitx5/ibus?)");
@@ -96,11 +115,51 @@ impl Ime {
 
     /// Inserts `text` at the cursor of the focused text field.
     pub fn commit(&self, text: &str) -> Result<()> {
-        let serial = self.shared.lock().unwrap().serial;
-        self.im.commit_string(text.to_string());
-        self.im.commit(serial);
-        self.conn.flush()?;
+        let mut rest = text;
+        while !rest.is_empty() {
+            let mut cut = rest.len().min(MAX_COMMIT);
+            while !rest.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            let (chunk, tail) = rest.split_at(cut);
+            let serial = self.shared.lock().unwrap().serial;
+            self.im.commit_string(chunk.to_string());
+            self.im.commit(serial);
+            self.conn.flush()?;
+            rest = tail;
+            if !rest.is_empty() {
+                // A second string before the app applied the first would replace it.
+                self.wait_done(serial, Duration::from_millis(300));
+            }
+        }
         Ok(())
+    }
+
+    /// The focused field's text around the cursor, if it reports any (never for secret
+    /// fields). Asks for a fresh copy first: an empty commit makes Hyprland acknowledge the
+    /// app's own commits, which Chromium waits for before it reports changes again
+    /// (otherwise its text goes stale after the first insert).
+    pub fn surrounding(&self, wait: Duration) -> Option<Surrounding> {
+        let serial = {
+            let f = self.shared.lock().unwrap();
+            if !f.active || f.secret {
+                return None;
+            }
+            f.serial
+        };
+        self.im.commit(serial);
+        let _ = self.conn.flush();
+        self.wait_done(serial, wait);
+        let f = self.shared.lock().unwrap();
+        if f.active && !f.secret { f.surrounding.clone() } else { None }
+    }
+
+    /// Waits until a `done` newer than `serial` arrived, or `timeout` passed.
+    fn wait_done(&self, serial: u32, timeout: Duration) {
+        let end = Instant::now() + timeout;
+        while self.shared.lock().unwrap().serial == serial && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(4));
+        }
     }
 }
 
@@ -125,6 +184,23 @@ impl Dispatch<ZwpInputMethodV2, ()> for State {
             Event::Activate => {
                 state.pending_active = true;
                 state.pending_secret = false;
+                state.pending_surrounding = None;
+                state.pending_reset = true;
+            }
+            Event::SurroundingText { text, cursor, anchor } => {
+                let clamp = |i: u32| {
+                    let mut i = (i as usize).min(text.len());
+                    while !text.is_char_boundary(i) {
+                        i -= 1;
+                    }
+                    i
+                };
+                let (cursor, anchor) = (clamp(cursor), clamp(anchor));
+                if state.verbose {
+                    let (a, b) = (cursor.min(anchor), cursor.max(anchor));
+                    eprintln!("  surrounding: {:?}▏{:?}▕{:?}", &text[..a], &text[a..b], &text[b..]);
+                }
+                state.pending_surrounding = Some(Surrounding { text, cursor, anchor });
             }
             Event::Deactivate => state.pending_active = false,
             Event::ContentType { hint, purpose } => {
@@ -143,6 +219,13 @@ impl Dispatch<ZwpInputMethodV2, ()> for State {
                 }
                 f.active = state.pending_active;
                 f.secret = state.pending_secret;
+                // Keep the last report within one focus; a new field starts empty.
+                if std::mem::take(&mut state.pending_reset) || !f.active {
+                    f.surrounding = None;
+                }
+                if let Some(s) = state.pending_surrounding.take() {
+                    f.surrounding = Some(s);
+                }
             }
             Event::Unavailable => state.shared.lock().unwrap().gone = true,
             _ => {}

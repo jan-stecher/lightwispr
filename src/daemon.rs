@@ -8,12 +8,16 @@
 //! Esc or any other key cancels. Those submap binds also leave the submap on their own, so
 //! the keyboard can't get stuck. Workspace/window events (a chord with a bound key)
 //! discard an armed take silently.
+//!
+//! After a take, the pipeline thread transcribes (Parakeet or Whisper), applies the
+//! vocabulary, optionally lets the LLM worker rewrite the text in the selected mode (with
+//! the focused field and window as context), and delivers it.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -23,11 +27,13 @@ use serde_json::json;
 
 use crate::audio::{self, Level, Recording};
 use crate::config::Config;
+use crate::context::{self, Field, Recent};
 use crate::deliver::{self, Delivered};
+use crate::enhance::{self, Enhancer, Failure, Vocabulary};
 use crate::ime::Ime;
 use crate::sound::{Cue, Player};
-use crate::stt::Stt;
-use crate::{hypr, ipc};
+use crate::stt::{Hints, Stt};
+use crate::{hypr, ipc, model};
 
 const ARM_DELAY: Duration = Duration::from_millis(250);
 /// Shorter recordings (after arming) are treated as accidental.
@@ -37,6 +43,12 @@ const SILENCE_RMS: f32 = 0.004;
 const HISTORY_MAX: usize = 10;
 /// Safety net: a dictation never runs longer than this.
 const MAX_RECORDING: Duration = Duration::from_secs(300);
+/// How long to wait for a text field to regain focus (e.g. after a bar panel closes).
+const REFOCUS_GRACE: Duration = Duration::from_millis(300);
+/// How long to wait for the field to report fresh surrounding text.
+const SURROUNDING_WAIT: Duration = Duration::from_millis(60);
+/// The mode list and installed models in the state file are refreshed this often.
+const CATALOG_TTL: Duration = Duration::from_secs(5);
 use crate::hotkey::{self, SUBMAP};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -46,6 +58,7 @@ enum Phase {
     Armed,
     Recording,
     Processing,
+    Enhancing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,13 +84,38 @@ enum Msg {
     /// Hyprland reloaded its config: our runtime binds are gone.
     Reloaded,
     Chord,
-    Done(u64, Result<(String, Delivered)>),
+    /// The transcript went to the LLM.
+    Enhancing(u64),
+    Done(u64, Result<Delivery>),
+    /// A model download finished (id, error).
+    Downloaded(String, Option<String>),
     Tick,
 }
 
 struct Job {
     generation: u64,
     samples: Vec<f32>,
+    /// Enhancement mode, None = off.
+    mode: Option<String>,
+    context: bool,
+    min_words: usize,
+    timeout: Duration,
+    language: Option<String>,
+}
+
+struct Delivery {
+    raw: String,
+    text: String,
+    how: Delivered,
+    /// The mode that rewrote the text, if any.
+    mode: Option<String>,
+}
+
+impl Delivery {
+    /// Nothing delivered (empty transcript, or the take was abandoned).
+    fn none(raw: String) -> Self {
+        Self { raw, text: String::new(), how: Delivered::Clipboard, mode: None }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -85,6 +123,11 @@ struct Entry {
     text: String,
     at: u64,
     delivered: String,
+    /// The transcript before enhancement (only when it differs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    raw: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
 }
 
 struct Daemon {
@@ -107,6 +150,18 @@ struct Daemon {
     ready_written: bool,
     /// Re-exec after the current reply (power off).
     restart: bool,
+    /// Enhancement worker status (enhance::STATUS_*), and what the bar last saw.
+    enhancer: Arc<AtomicU8>,
+    enhancer_written: u8,
+    /// The worker the pipeline was told to run: (model, gpu).
+    enhancer_running: Option<(PathBuf, bool)>,
+    /// Running download: (model id, percent).
+    download: Arc<Mutex<Option<(String, u8)>>>,
+    download_written: Option<(String, u8)>,
+    /// Modes and installed models for the bar, cached for CATALOG_TTL.
+    catalog: (Instant, serde_json::Value),
+    /// Shared with the pipeline; here only for `field` (diagnostics).
+    ime: Option<Arc<Ime>>,
 }
 
 pub fn run() -> Result<()> {
@@ -132,7 +187,8 @@ pub fn run() -> Result<()> {
     };
 
     let ready = Arc::new(AtomicBool::new(false));
-    let jobs = spawn_stt_worker(tx.clone(), generation.clone(), ime, ready.clone());
+    let enhancer = Arc::new(AtomicU8::new(enhance::STATUS_OFF));
+    let jobs = spawn_pipeline(tx.clone(), generation.clone(), ime.clone(), ready.clone(), enhancer.clone());
     {
         let tx = tx.clone();
         hypr::watch(move |e| {
@@ -159,7 +215,7 @@ pub fn run() -> Result<()> {
 
     let config = Config::load();
     if config.enabled {
-        let _ = jobs.send(Work::Load);
+        let _ = jobs.send(Work::Load { engine: config.stt.clone(), gpu: config.gpu });
     }
     let mut d = Daemon {
         tx,
@@ -178,7 +234,15 @@ pub fn run() -> Result<()> {
         ready,
         ready_written: false,
         restart: false,
+        enhancer,
+        enhancer_written: enhance::STATUS_OFF,
+        enhancer_running: None,
+        download: Arc::new(Mutex::new(None)),
+        download_written: None,
+        catalog: (Instant::now() - CATALOG_TTL, serde_json::Value::Null),
+        ime,
     };
+    d.sync_enhancer();
     d.register_hotkey();
     // Recover from a crash mid-dictation.
     if current_submap().as_deref() == Some(SUBMAP) {
@@ -212,25 +276,40 @@ fn accept_loop(listener: UnixListener, tx: Sender<Msg>) {
 
 enum Work {
     Transcribe(Job),
-    /// Load the model (power on).
-    Load,
+    /// Load the speech engine (power on).
+    Load { engine: String, gpu: bool },
     /// Drop the model and hand its memory back to the OS (power off).
     Unload,
+    /// Start (or restart with another model) the LLM worker, primed for `mode`.
+    StartEnhancer { model: PathBuf, gpu: bool, mode: Option<String> },
+    /// Precompute a mode's prompt prefix in the worker (mode switch).
+    Prime(String),
+    StopEnhancer,
 }
 
-fn spawn_stt_worker(tx: Sender<Msg>, generation: Arc<AtomicU64>, ime: Option<Arc<Ime>>, ready: Arc<AtomicBool>) -> Sender<Work> {
+/// The pipeline thread owns the speech model and the LLM worker and handles one take at a
+/// time: transcribe → vocabulary → [enhance] → join → deliver.
+fn spawn_pipeline(
+    tx: Sender<Msg>,
+    generation: Arc<AtomicU64>,
+    ime: Option<Arc<Ime>>,
+    ready: Arc<AtomicBool>,
+    enhancer_status: Arc<AtomicU8>,
+) -> Sender<Work> {
     let (wtx, wrx) = mpsc::channel::<Work>();
     std::thread::Builder::new()
-        .name("stt".into())
+        .name("pipeline".into())
         .spawn(move || {
             let mut stt: Option<Stt> = None;
+            let mut enhancer: Option<Enhancer> = None;
+            let mut recent = Recent::default();
             for work in wrx {
                 match work {
-                    Work::Load if stt.is_none() => {
+                    Work::Load { engine, gpu } if stt.is_none() => {
                         let t = Instant::now();
-                        match Stt::load() {
+                        match Stt::load(&engine, gpu) {
                             Ok(m) => {
-                                eprintln!("model loaded in {:.2?}", t.elapsed());
+                                eprintln!("{engine} loaded in {:.2?}", t.elapsed());
                                 stt = Some(m);
                                 ready.store(true, Ordering::SeqCst);
                             }
@@ -238,7 +317,7 @@ fn spawn_stt_worker(tx: Sender<Msg>, generation: Arc<AtomicU64>, ime: Option<Arc
                         }
                         let _ = tx.send(Msg::Tick);
                     }
-                    Work::Load => {}
+                    Work::Load { .. } => {}
                     Work::Unload => {
                         if stt.take().is_some() {
                             ready.store(false, Ordering::SeqCst);
@@ -247,24 +326,128 @@ fn spawn_stt_worker(tx: Sender<Msg>, generation: Arc<AtomicU64>, ime: Option<Arc
                         }
                         let _ = tx.send(Msg::Tick);
                     }
+                    Work::StartEnhancer { model, gpu, mode } => {
+                        enhancer = None;
+                        match Enhancer::spawn(&model, gpu, enhancer_status.clone()) {
+                            Ok(mut e) => {
+                                // Queued behind the model load in the worker.
+                                prime(&mut e, mode.as_deref());
+                                enhancer = Some(e);
+                            }
+                            Err(e) => {
+                                eprintln!("{e:#}");
+                                enhancer_status.store(enhance::STATUS_ERROR, Ordering::SeqCst);
+                            }
+                        }
+                        let _ = tx.send(Msg::Tick);
+                    }
+                    Work::StopEnhancer => {
+                        enhancer = None;
+                        let _ = tx.send(Msg::Tick);
+                    }
+                    Work::Prime(mode) => {
+                        if let Some(e) = enhancer.as_mut() {
+                            prime(e, Some(&mode));
+                        }
+                    }
                     Work::Transcribe(job) => {
                         let result = match stt.as_mut() {
                             None => Err(anyhow::anyhow!("model not loaded")),
-                            Some(stt) => stt.transcribe(&job.samples).and_then(|text| {
-                                if text.is_empty() || generation.load(Ordering::SeqCst) != job.generation {
-                                    return Ok((text, Delivered::Clipboard));
-                                }
-                                let how = deliver::deliver(ime.as_deref(), &text)?;
-                                Ok((text, how))
-                            }),
+                            Some(stt) => process(stt, enhancer.as_mut(), ime.as_deref(), &mut recent, &job, &generation, &tx),
                         };
                         let _ = tx.send(Msg::Done(job.generation, result));
                     }
                 }
             }
         })
-        .expect("spawn stt thread");
+        .expect("spawn pipeline thread");
     wtx
+}
+
+fn prime(enhancer: &mut Enhancer, mode: Option<&str>) {
+    if let Some(mode) = mode.and_then(enhance::find_mode) {
+        let req = enhance::prime_request(enhancer.next_id(), &mode, &Vocabulary::load());
+        enhancer.prime(&req);
+    }
+}
+
+fn process(
+    stt: &mut Stt,
+    enhancer: Option<&mut Enhancer>,
+    ime: Option<&Ime>,
+    recent: &mut Recent,
+    job: &Job,
+    generation: &AtomicU64,
+    tx: &Sender<Msg>,
+) -> Result<Delivery> {
+    let stale = || generation.load(Ordering::SeqCst) != job.generation;
+    let vocab = Vocabulary::load();
+    let raw = stt.transcribe(&job.samples, &Hints { prompt: vocab.prompt(), language: job.language.clone() })?;
+    if raw.is_empty() || stale() {
+        return Ok(Delivery::none(raw));
+    }
+    let mut text = vocab.canonicalize(&vocab.apply(&raw));
+
+    // Context: the focused field (where the app reports it) and the window.
+    let field = ime
+        .filter(|_| job.context)
+        .filter(|i| i.wait_typable(REFOCUS_GRACE))
+        .and_then(|i| i.surrounding(SURROUNDING_WAIT))
+        .map(|s| Field::from(&s));
+    let window = if job.context { deliver::active_window() } else { None };
+
+    let mut mode_used = None;
+    let mode = job.mode.as_deref().and_then(enhance::find_mode);
+    if let (Some(mode), Some(enh)) = (mode, enhancer) {
+        if enh.is_ready() && text.split_whitespace().count() >= job.min_words {
+            let _ = tx.send(Msg::Enhancing(job.generation));
+            let mut ctx = enhance::Context::default();
+            if let Some(f) = &field {
+                (ctx.before, ctx.after) = f.trimmed();
+            }
+            if let Some(w) = &window {
+                ctx.app = Some(context::app_line(w));
+                // Apps that report no field text: what was dictated here before.
+                if field.is_none() {
+                    ctx.earlier = recent.get(&w.address);
+                }
+            }
+            let req = enhance::request(enh.next_id(), &mode, &vocab, &ctx, &text);
+            let t = Instant::now();
+            match enh.run(&req, job.timeout, stale) {
+                Ok(reply) => match enhance::check(&text, &reply.text, &ctx) {
+                    Ok(out) => {
+                        eprintln!(
+                            "{} in {} ms ({} prompt tokens, {} cached, {} generated)",
+                            mode.id,
+                            t.elapsed().as_millis(),
+                            reply.prompt_tokens,
+                            reply.cached_tokens,
+                            reply.gen_tokens
+                        );
+                        text = vocab.canonicalize(&out);
+                        mode_used = Some(mode.id.clone());
+                    }
+                    Err(why) => eprintln!("enhancement rejected ({why}), delivering the transcript: {:?}", reply.text),
+                },
+                Err(Failure::Cancelled) => return Ok(Delivery::none(raw)),
+                Err(Failure::Timeout) => eprintln!("enhancement timed out, delivering the transcript"),
+                Err(Failure::Other(e)) => eprintln!("enhancement failed, delivering the transcript: {e:#}"),
+            }
+        }
+    }
+    if stale() {
+        return Ok(Delivery::none(raw));
+    }
+    let typed = match &field {
+        Some(f) => context::join(&text, f),
+        None => text.clone(),
+    };
+    let how = deliver::deliver(ime, &typed)?;
+    if let Some(w) = &window {
+        recent.add(&w.address, &text);
+    }
+    Ok(Delivery { raw, text, how, mode: mode_used })
 }
 
 /// glibc keeps freed heap pages around; ask it to return them so "off" really frees RAM.
@@ -305,16 +488,21 @@ impl Daemon {
                     (Phase::Recording, Trigger::Ptt) => self.discard(true),
                     _ => {}
                 },
-                Msg::Done(g, result) => {
+                Msg::Enhancing(g) => {
                     if self.phase == Phase::Processing && self.current() == g {
+                        self.set_phase(Phase::Enhancing);
+                    }
+                }
+                Msg::Done(g, result) => {
+                    if matches!(self.phase, Phase::Processing | Phase::Enhancing) && self.current() == g {
                         let outcome = match result {
-                            Ok((text, _)) if text.is_empty() => {
+                            Ok(d) if d.text.is_empty() => {
                                 self.sound.play(Cue::Cancel);
                                 Outcome::Empty
                             }
-                            Ok((text, how)) => {
-                                self.remember(&text, how);
-                                match how {
+                            Ok(d) => {
+                                self.remember(&d);
+                                match d.how {
                                     Delivered::Typed | Delivered::Pasted => Outcome::Typed,
                                     Delivered::Clipboard => Outcome::Clipboard,
                                 }
@@ -329,10 +517,30 @@ impl Daemon {
                         self.set_phase(Phase::Idle);
                     }
                 }
+                Msg::Downloaded(id, error) => {
+                    match error {
+                        Some(e) => {
+                            eprintln!("download of {id} failed: {e}");
+                            self.sound.play(Cue::Error);
+                        }
+                        None => eprintln!("{id} downloaded"),
+                    }
+                    self.catalog.0 = Instant::now() - CATALOG_TTL;
+                    self.sync_enhancer();
+                    self.write_state();
+                }
                 Msg::Tick => {
                     let ready = self.ready.load(Ordering::SeqCst);
-                    if self.phase == Phase::Recording || ready != self.ready_written {
+                    let enhancer = self.enhancer.load(Ordering::SeqCst);
+                    let download = self.download.lock().unwrap().clone();
+                    if self.phase == Phase::Recording
+                        || ready != self.ready_written
+                        || enhancer != self.enhancer_written
+                        || download != self.download_written
+                    {
                         self.ready_written = ready;
+                        self.enhancer_written = enhancer;
+                        self.download_written = download;
                         self.write_state();
                     }
                 }
@@ -363,12 +571,12 @@ impl Daemon {
                 Phase::Idle if !self.config.enabled => {}
                 Phase::Idle => self.begin(Trigger::Toggle),
                 Phase::Armed | Phase::Recording => self.finish(),
-                Phase::Processing => {}
+                Phase::Processing | Phase::Enhancing => {}
             },
             "cancel" => match self.phase {
                 Phase::Armed => self.discard(false),
                 Phase::Recording => self.discard(true),
-                Phase::Processing => {
+                Phase::Processing | Phase::Enhancing => {
                     self.generation.fetch_add(1, Ordering::SeqCst);
                     self.sound.play(Cue::Cancel);
                     self.set_last(Outcome::Cancelled);
@@ -395,7 +603,8 @@ impl Daemon {
                     self.config.enabled = on;
                     self.config.save();
                     if on {
-                        let _ = self.jobs.send(Work::Load);
+                        let _ = self.jobs.send(Work::Load { engine: self.config.stt.clone(), gpu: self.config.gpu });
+                        self.sync_enhancer();
                     } else {
                         // Dropping the model leaves ONNX Runtime allocations behind (~250 MB
                         // after real use). A fresh process in "off" mode is the only way to
@@ -419,6 +628,99 @@ impl Daemon {
                     }
                     self.write_state();
                 }
+            }
+            "stt" => {
+                let Some(engine) = arg.filter(|e| matches!(*e, "parakeet" | "whisper")) else {
+                    return json!({ "ok": false, "error": "usage: stt parakeet|whisper" }).to_string();
+                };
+                if engine != self.config.stt {
+                    let spec = if engine == "whisper" { &model::WHISPER } else { &model::PARAKEET };
+                    if !spec.is_installed() {
+                        return json!({ "ok": false, "error": format!("{engine} is not downloaded: lightwispr download-model {engine}") }).to_string();
+                    }
+                    self.switch(|c| c.stt = engine.to_string());
+                }
+            }
+            "gpu" => {
+                let on = match arg {
+                    Some("on") => true,
+                    Some("off") => false,
+                    _ => !self.config.gpu,
+                };
+                if on != self.config.gpu {
+                    self.switch(|c| c.gpu = on);
+                }
+            }
+            "mode" => {
+                let Some(id) = arg.filter(|id| *id == "off" || enhance::find_mode(id).is_some()) else {
+                    let ids: Vec<_> = enhance::modes().into_iter().map(|m| m.id).collect();
+                    return json!({ "ok": false, "error": format!("usage: mode off|{}", ids.join("|")) }).to_string();
+                };
+                if id != self.config.enhance.mode {
+                    self.config.enhance.mode = id.to_string();
+                    self.config.save();
+                    let was_running = self.enhancer_running.is_some();
+                    self.sync_enhancer();
+                    if was_running && id != "off" {
+                        let _ = self.jobs.send(Work::Prime(id.to_string()));
+                    }
+                    self.write_state();
+                }
+            }
+            "modes" => {
+                // The bar asks when its panel opens: pick up new or edited mode files.
+                self.catalog.0 = Instant::now() - CATALOG_TTL;
+                self.write_state();
+            }
+            "context" => {
+                self.config.enhance.context = match arg {
+                    Some("on") => true,
+                    Some("off") => false,
+                    _ => !self.config.enhance.context,
+                };
+                self.config.save();
+                self.write_state();
+            }
+            "download" => {
+                let spec = match arg {
+                    Some("parakeet") => Some(&model::PARAKEET),
+                    Some("whisper") => Some(&model::WHISPER),
+                    Some("enhance") | None => Some(self.config.llm()),
+                    Some(id) => model::find(id),
+                };
+                let Some(spec) = spec else {
+                    return json!({ "ok": false, "error": "usage: download parakeet|whisper|enhance|<model id>" }).to_string();
+                };
+                if self.download.lock().unwrap().is_some() {
+                    return json!({ "ok": false, "error": "a download is already running" }).to_string();
+                }
+                *self.download.lock().unwrap() = Some((spec.id.to_string(), 0));
+                let (progress, tx) = (self.download.clone(), self.tx.clone());
+                std::thread::spawn(move || {
+                    let result = spec.download(|done, total| {
+                        let pct = (done * 100 / total.max(1)) as u8;
+                        let mut p = progress.lock().unwrap();
+                        if p.as_ref().is_some_and(|(_, old)| *old != pct) {
+                            *p = Some((spec.id.to_string(), pct));
+                        }
+                    });
+                    *progress.lock().unwrap() = None;
+                    let _ = tx.send(Msg::Downloaded(spec.id.to_string(), result.err().map(|e| format!("{e:#}"))));
+                });
+                self.write_state();
+            }
+            "field" => {
+                // What the context step would see right now (for checking app support).
+                let s = self.ime.as_ref().and_then(|i| i.surrounding(SURROUNDING_WAIT));
+                let win = deliver::active_window();
+                return json!({
+                    "ok": true,
+                    "input_method": self.ime.is_some(),
+                    "focused": self.ime.as_ref().is_some_and(|i| i.is_active()),
+                    "field": s.map(|s| { let f = Field::from(&s); json!({ "before": f.before, "after": f.after }) }),
+                    "app": win.as_ref().map(context::app_line),
+                })
+                .to_string();
             }
             "clear-history" => {
                 let _ = std::fs::remove_file(history_path());
@@ -514,7 +816,49 @@ impl Daemon {
         }
         self.sound.play(Cue::Stop);
         self.set_phase(Phase::Processing);
-        let _ = self.jobs.send(Work::Transcribe(Job { generation: self.current(), samples }));
+        let e = &self.config.enhance;
+        let _ = self.jobs.send(Work::Transcribe(Job {
+            generation: self.current(),
+            samples,
+            mode: Some(e.mode.clone()).filter(|m| m != "off"),
+            context: e.context,
+            min_words: e.min_words,
+            timeout: Duration::from_millis(e.timeout_ms),
+            language: self.config.whisper_language(),
+        }));
+    }
+
+    /// Changes a setting that needs the models reloaded: save, then restart the process
+    /// (the new one loads only what the config says, and no old allocations linger).
+    fn switch(&mut self, change: impl FnOnce(&mut Config)) {
+        match self.phase {
+            Phase::Armed => self.discard(false),
+            Phase::Recording => self.discard(true),
+            _ => {}
+        }
+        change(&mut self.config);
+        self.config.save();
+        if self.config.enabled {
+            self.restart = true;
+        }
+        self.write_state();
+    }
+
+    /// Runs the LLM worker exactly when the daemon is on, a mode is selected and its model
+    /// is downloaded.
+    fn sync_enhancer(&mut self) {
+        let spec = self.config.llm();
+        let want = self.config.enabled && self.config.enhance.mode != "off" && spec.is_installed();
+        let target = want.then(|| (spec.path(), self.config.gpu));
+        if target == self.enhancer_running {
+            return;
+        }
+        let mode = Some(self.config.enhance.mode.clone()).filter(|m| m != "off");
+        let _ = self.jobs.send(match &target {
+            Some((model, gpu)) => Work::StartEnhancer { model: model.clone(), gpu: *gpu, mode },
+            None => Work::StopEnhancer,
+        });
+        self.enhancer_running = target;
     }
 
     /// Replaces this process with a fresh daemon (same PID, so systemd doesn't notice).
@@ -594,11 +938,52 @@ impl Daemon {
             "hotkey": self.config.hotkey,
             "sound": self.config.sound,
             "volume": (self.config.volume as f64 * 100.0).round() / 100.0,
+            "stt": self.config.stt,
+            "gpu": self.config.gpu,
+            "mode": self.config.enhance.mode,
+            "context": self.config.enhance.context,
+            "enhancer": self.enhancer_state(),
+            "llm": self.config.llm().label,
+            "download": self.download.lock().unwrap().as_ref().map(|(id, pct)| json!({ "model": id, "pct": pct })),
+            "catalog": self.catalog.1,
         })
     }
 
+    /// off | loading | ready | error, or "missing" when a mode is on but its model isn't
+    /// downloaded yet.
+    fn enhancer_state(&self) -> &'static str {
+        if self.config.enhance.mode != "off" && self.enhancer_running.is_none() && self.config.enabled {
+            return "missing";
+        }
+        enhance::status_name(self.enhancer.load(Ordering::SeqCst))
+    }
+
+    /// Modes and installed models, re-read at most every CATALOG_TTL (the state file is
+    /// written many times a second while recording).
+    fn refresh_catalog(&mut self) {
+        if self.catalog.0.elapsed() < CATALOG_TTL {
+            return;
+        }
+        let modes: Vec<_> =
+            enhance::modes().into_iter().map(|m| json!({ "id": m.id, "name": m.name, "glyph": m.glyph })).collect();
+        let llm = self.config.llm();
+        self.catalog = (
+            Instant::now(),
+            json!({
+                "modes": modes,
+                "installed": {
+                    "parakeet": model::PARAKEET.is_installed(),
+                    "whisper": model::WHISPER.is_installed(),
+                    "enhance": llm.is_installed(),
+                },
+                "sizes": { "parakeet": model::PARAKEET.size_mb(), "whisper": model::WHISPER.size_mb(), "enhance": llm.size_mb() },
+            }),
+        );
+    }
+
     /// The bar reads this file (no socket round-trip needed for polling).
-    fn write_state(&self) {
+    fn write_state(&mut self) {
+        self.refresh_catalog();
         let path = ipc::runtime_dir().join("state.json");
         let tmp = path.with_extension("tmp");
         if std::fs::write(&tmp, self.status().to_string()).is_ok() {
@@ -606,12 +991,15 @@ impl Daemon {
         }
     }
 
-    fn remember(&self, text: &str, how: Delivered) {
+    fn remember(&self, d: &Delivery) {
         let mut h = load_history();
+        let text = d.text.trim().to_string();
         h.insert(0, Entry {
-            text: text.to_string(),
+            raw: Some(d.raw.clone()).filter(|r| *r != text),
+            mode: d.mode.clone(),
+            text,
             at: SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
-            delivered: serde_json::to_value(how).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default(),
+            delivered: serde_json::to_value(d.how).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default(),
         });
         h.truncate(HISTORY_MAX);
         let path = history_path();

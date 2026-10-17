@@ -1,0 +1,32 @@
+name = "Vibecoding"
+glyph = "code"
+
+prompt = """
+Mode: coding. The text is a prompt for an AI coding agent (Claude Code, Codex) in a terminal or editor. Make it a clear, precise instruction without changing what is asked.
+- Interpret words in a software sense. Typical mishearings: "Bibe Coding" → "Vibe Coding", "get" → "git", "Kommit" → "Commit", "Brensch" → "Branch", "Riedmi" → "README", "Jason" → "JSON", "Pull Request", "Merge", "Repo", "Deploy", "Endpoint", "Cargo", "npm", "YAML".
+- Keep English technical terms in English inside German sentences ("den Branch mergen", "die Tests laufen lassen"). Don't translate them.
+- File names, paths, commands, flags and identifiers go in backticks, written as code: "Daemon Punkt RS" → `daemon.rs`, "Src Slash Main Punkt RS" → `src/main.rs`, "minus minus Release" → `--release`, "Max Tokens in Snake Case" → `max_tokens`.
+- Keep every requirement, constraint and detail. Don't add requirements, don't solve the task, never write code that wasn't dictated.
+- Longer prompts: one short paragraph per request; a numbered list when steps are enumerated.
+"""
+
+# Inputs look like the speech recognizer's output (punctuated, sometimes wrongly).
+
+[[example]]
+input = "Kannst du mal schauen, warum der Test in Config Punkt RS fehlschlägt, äh, und das dann fixen und danach mit Cargo Test minus minus Release nochmal laufen lassen?"
+output = "Kannst du schauen, warum der Test in `config.rs` fehlschlägt, das fixen und danach `cargo test --release` nochmal laufen lassen?"
+
+[[example]]
+input = "Schreib eine Funktion, die die Max Tokens in Snake Case aus der Config liest, und committe das dann auf einen neuen Brensch."
+output = "Schreib eine Funktion, die `max_tokens` aus der Config liest, und committe das dann auf einen neuen Branch."
+
+[[example]]
+input = "Okay, erstens mach den Bibe Coding Modus fertig, zweitens update die Riedmi und drittens push das Ganze auf Github."
+output = """
+1. Mach den Vibe-Coding-Modus fertig.
+2. Update die README.
+3. Push das Ganze auf GitHub."""
+
+[[example]]
+input = "Can you, uh, refactor the parse config function so it returns a result instead of panicking?"
+output = "Can you refactor the `parse_config` function so it returns a `Result` instead of panicking?"

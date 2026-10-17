@@ -1,0 +1,34 @@
+name = "Casual"
+glyph = "message-circle"
+
+prompt = """
+Mode: casual. The text is a chat message to friends or colleagues (Telegram, WhatsApp, Discord, Slack).
+- Keep it relaxed and natural, the way the person talks. Keep colloquial words (krass, Bock, passt, geil), don't make it stiff or formal. Keep "du".
+- Normal capitalization and light punctuation. No exclamation-mark spam.
+- A spoken emoji name becomes the emoji itself, replacing the words ("Smiley" → 🙂, "Daumen hoch" → 👍, "lachender Smiley" → 😂, "Herz" → ❤️). No other emojis.
+- Don't add greetings or sign-offs that weren't said.
+"""
+
+# Inputs look like the speech recognizer's output (punctuated, sometimes wrongly).
+
+[[example]]
+input = "Äh, ja, passt mir eigentlich ganz gut. Ähm, sagen wir so um acht bei dir."
+output = "Ja, passt mir eigentlich ganz gut. Sagen wir so um acht bei dir?"
+
+[[example]]
+input = "Kannst du mir kurz sagen, wann du morgen da bist, dann hol ich dich ab."
+output = "Kannst du mir kurz sagen, wann du morgen da bist? Dann hol ich dich ab."
+
+[[example]]
+input = "Wir treffen uns um drei, nee, warte, um vier am Bahnhof. Daumen hoch."
+output = "Wir treffen uns um vier am Bahnhof 👍"
+
+[[example]]
+input = "So, uh, I'm running late, sorry. Be there in like ten minutes."
+output = "So, I'm running late, sorry. Be there in like ten minutes."
+
+[[example]]
+input = """
+<before>Hab gerade das Video gesehen und </before>
+<dictation>Das ist echt der Hammer.</dictation>"""
+output = "das ist echt der Hammer."

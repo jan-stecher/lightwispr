@@ -7,8 +7,8 @@ After=graphical-session.target
 ExecStart=%h/.local/bin/lightwispr daemon
 Restart=on-failure
 RestartSec=2
-# Plenty for the ~0.7 GB model; stops a runaway from eating the machine.
-MemoryMax=3G
+# Room for the speech model plus the enhancement worker (same cgroup); stops a runaway.
+MemoryMax=8G
 
 [Install]
 WantedBy=graphical-session.target

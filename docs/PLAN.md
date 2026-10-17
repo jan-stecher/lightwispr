@@ -114,12 +114,14 @@ hotkey/bar ─▶ capture (PipeWire, 16 kHz mono, in memory)
 3. **Daemon + hotkeys + sounds.** ✅
 4. **Noctalia plugin** (widget + panel). ✅
 5. **Enhancement + modes.** Postponed (2026-10-07): Parakeet's raw output is good enough for now.
+   Resumed 2026-10-17 together with a Whisper backend and text-field context: see [SPEC-enhancement.md](SPEC-enhancement.md).
 6. **Open-source release:** README, MIT license, model attribution (Parakeet CC-BY-4.0), AUR package.
 
 ## Open questions
 
 - Default enhancement model size (0.6B vs 1.7B): decide after measuring quality on German.
-- GPU: **decided 2026-10-07: CPU only, no GPU backend** (fast enough, keeps it light).
+- GPU: **decided 2026-10-07: CPU only, no GPU backend** (fast enough, keeps it light). Still true for Parakeet;
+  since 2026-10-17 Whisper and the enhancement LLM may use Vulkan (optional build feature), see the spec.
 
 ## Prototype results (2026-10-07, i9-9900K, CPU only, int8)
 

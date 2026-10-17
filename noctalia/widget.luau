@@ -1,12 +1,14 @@
 --!nonstrict
 -- Bar widget: a calm mic glyph when idle, a live level meter while listening, a soft
--- pulse while transcribing, and a brief check / "copied" after delivery.
--- Left click: panel. Right click: start/stop a dictation.
+-- pulse while transcribing (sparkles while the LLM polishes), and a brief check / "copied"
+-- after delivery. Left click: panel. Right click: start/stop a dictation. Scroll: next
+-- enhancement mode (its glyph flashes briefly).
 
 local C = require("./common.luau")
 
 local PANEL = "lightwispr/lightwispr:panel"
 local FEEDBACK_MS = 1600
+local MODE_FLASH_MS = 1200
 local ERROR_MS = 3500
 -- Each bar reacts a little differently, so the meter looks like speech, not a VU block.
 local BAR_WEIGHTS = { 0.7, 1.0, 0.85, 0.6 }
@@ -16,6 +18,9 @@ local WIDTH = 30
 local alive = true
 local lastAliveCheck = 0
 local bars = { 0, 0, 0, 0 }
+local lastState = nil
+-- Mode picked by scrolling, shown until the daemon confirms it.
+local flash = { mode = nil, untilMs = 0 }
 
 local function frame(children, gap)
   return ui.row({ width = WIDTH, height = 18, align = "center", justify = "center", gap = gap or 0 }, children)
@@ -40,10 +45,10 @@ local function meterTree(level)
   return frame(children, 2)
 end
 
-local function pulseTree()
+local function pulseTree(glyph)
   local t = noctalia.nowMs() / 1000
   return frame({
-    ui.glyph({ name = "microphone", size = 16, color = "primary", opacity = 0.45 + 0.55 * (0.5 + 0.5 * math.sin(t * 5)) }),
+    ui.glyph({ name = glyph, size = 16, color = "primary", opacity = 0.45 + 0.55 * (0.5 + 0.5 * math.sin(t * 5)) }),
   })
 end
 
@@ -61,7 +66,12 @@ local function tooltip(state)
   if not state.ready then
     return noctalia.tr("status.loading")
   end
-  return { { key = noctalia.tr("title"), value = noctalia.tr("hint") } }
+  local rows = { { key = noctalia.tr("title"), value = noctalia.tr("hint") } }
+  if state.stt then
+    table.insert(rows, { key = noctalia.tr("proc.engine"), value = noctalia.tr("engine." .. state.stt) })
+    table.insert(rows, { key = noctalia.tr("proc.style"), value = C.modeName(state, C.mode(state)) })
+  end
+  return rows
 end
 
 local function render()
@@ -75,7 +85,13 @@ local function render()
     tree = meterTree(state.level or 0)
     fast = true
   elseif state.phase == "processing" then
-    tree = pulseTree()
+    tree = pulseTree("microphone")
+    fast = true
+  elseif state.phase == "enhancing" then
+    tree = pulseTree("sparkles")
+    fast = true
+  elseif flash.mode and noctalia.nowMs() < flash.untilMs then
+    tree = resultTree(C.modeGlyph(state, flash.mode), flash.mode == "off" and "on_surface_variant" or "primary")
     fast = true
   else
     local since = C.sinceLast(state)
@@ -93,6 +109,7 @@ local function render()
     end
   end
 
+  lastState = state
   barWidget.render(tree)
   barWidget.setTooltip(tooltip(state))
   -- Smooth while something moves, near-free when idle.
@@ -116,4 +133,16 @@ end
 
 function onRightClick()
   C.run({ "toggle" })
+end
+
+function onScroll(axis, steps, startsGesture)
+  -- One mode per flick, so a fast wheel doesn't race through all of them.
+  if axis ~= "vertical" or not startsGesture or lastState == nil or lastState.catalog == nil then
+    return
+  end
+  local base = (flash.mode and noctalia.nowMs() < flash.untilMs) and { mode = flash.mode, catalog = lastState.catalog } or lastState
+  local id = C.stepMode(base, steps > 0 and 1 or -1)
+  flash = { mode = id, untilMs = noctalia.nowMs() + MODE_FLASH_MS }
+  C.run({ "mode", id })
+  render()
 end

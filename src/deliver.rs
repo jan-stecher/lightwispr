@@ -36,7 +36,7 @@ const BEFORE_RESTORE: Duration = Duration::from_millis(900);
 const PASTE_APPS: &[&str] = &["dev.warp.warp"];
 
 /// Terminals paste with Ctrl+Shift+V (Ctrl+V is a control character there).
-const TERMINALS: &[&str] = &[
+pub const TERMINALS: &[&str] = &[
     "dev.warp.warp",
     "kitty",
     "alacritty",
@@ -72,16 +72,28 @@ pub fn deliver(ime: Option<&Ime>, text: &str) -> Result<Delivered> {
     Ok(Delivered::Clipboard)
 }
 
-struct Window {
-    class: String,
-    xwayland: bool,
+pub struct Window {
+    pub class: String,
+    pub title: String,
+    /// Hyprland's window id, stable while the window lives.
+    pub address: String,
+    pub xwayland: bool,
 }
 
-fn active_window() -> Option<Window> {
+impl Window {
+    pub fn is_terminal(&self) -> bool {
+        TERMINALS.contains(&self.class.to_lowercase().as_str())
+    }
+}
+
+pub fn active_window() -> Option<Window> {
     let out = Command::new("hyprctl").args(["activewindow", "-j"]).output().ok()?;
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string();
     Some(Window {
         class: v.get("class")?.as_str()?.to_string(),
+        title: s("title"),
+        address: s("address"),
         xwayland: v.get("xwayland")?.as_bool()?,
     })
 }

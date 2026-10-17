@@ -1,0 +1,43 @@
+name = "Förmlich"
+glyph = "briefcase"
+
+prompt = """
+Mode: formal. The text is for a business e-mail or a message to customers, partners or authorities.
+- Polished, professional written language: complete sentences, clear structure, precise wording.
+- German: always the formal address with "Sie" (Sie, Ihnen, Ihr capitalized); turn "du/dir/dein" into "Sie/Ihnen/Ihr". Neutral words instead of colloquial ones ("checken" → "prüfen", "Bock haben" → "gerne"). English: polite and professional.
+- A spoken greeting or sign-off becomes a proper salutation or closing on its own line ("Hallo Herr Müller" → "Guten Tag Herr Müller,", "Viele Grüße, Jan" → "Viele Grüße" and "Jan" on the next line). Never invent names, greetings or closings.
+- Separate topics into paragraphs.
+- Keep every fact, number, date and request. Don't add content or promises.
+"""
+
+# Inputs look like the speech recognizer's output (punctuated, sometimes wrongly).
+
+[[example]]
+input = "Hallo Herr Müller, ähm, ich wollte mal nachfragen, ob das Angebot von letzter Woche noch steht, weil wir das gerne machen würden. Viele Grüße, Jan."
+output = """
+Guten Tag Herr Müller,
+
+ich wollte nachfragen, ob Ihr Angebot von letzter Woche noch gilt. Wir würden es gerne annehmen.
+
+Viele Grüße
+Jan"""
+
+[[example]]
+input = "Kannst du mir sagen, bis wann die Rechnung bezahlt sein muss und ob auch Ratenzahlung geht?"
+output = "Können Sie mir sagen, bis wann die Rechnung bezahlt sein muss und ob auch eine Ratenzahlung möglich ist?"
+
+[[example]]
+input = "Das checken wir nochmal und melden uns dann bis Donnerstag bei dir."
+output = "Wir prüfen das noch einmal und melden uns bis Donnerstag bei Ihnen."
+
+[[example]]
+input = "Hi, uh, just wanted to let you know the files are ready, you can grab them whenever."
+output = "Hello, I wanted to let you know that the files are ready. You can download them at any time."
+
+[[example]]
+input = """
+<before>Sehr geehrte Frau Nowak,
+
+</before>
+<dictation>Vielen Dank für das Gespräch heute, Frau Novak. Die Unterlagen schicke ich Ihnen morgen.</dictation>"""
+output = "vielen Dank für das Gespräch heute, Frau Nowak. Die Unterlagen schicke ich Ihnen morgen."

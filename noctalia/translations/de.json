@@ -8,7 +8,8 @@
     "listening": "Hört zu…",
     "processing": "Wird transkribiert…",
     "offline": "Dienst läuft nicht",
-    "off": "Aus · Speicher freigegeben"
+    "off": "Aus · Speicher freigegeben",
+    "enhancing": "Wird verbessert…"
   },
   "result": {
     "typed": "Eingefügt",
@@ -24,7 +25,8 @@
     "copied": "Kopiert",
     "click": "Klicken zum Kopieren",
     "typed": "eingefügt",
-    "clipboard": "kopiert"
+    "clipboard": "kopiert",
+    "original": "Original-Transkript kopieren"
   },
   "sound": {
     "title": "Klang",
@@ -49,5 +51,29 @@
     "right_ctrl": "Strg rechts",
     "ctrl_super": "Strg + Super",
     "super_alt": "Super + Alt"
+  },
+  "proc": {
+    "title": "Verarbeitung",
+    "engine": "Erkennung",
+    "style": "Stil",
+    "context": "Textfeld mitlesen",
+    "edit": "Prompt bearbeiten",
+    "download": "Laden ({mb} MB)",
+    "downloading": "Wird geladen… {pct} %",
+    "missing": "Modell nicht geladen",
+    "loading": "Modell lädt…",
+    "ready": "bereit",
+    "error": "Modell konnte nicht laden",
+    "not_loaded": "nicht geladen"
+  },
+  "engine": {
+    "parakeet": "Parakeet (NVIDIA)",
+    "whisper": "Whisper (OpenAI)"
+  },
+  "mode": {
+    "off": "Aus",
+    "casual": "Casual",
+    "formal": "Förmlich",
+    "coding": "Vibecoding"
   }
 }
