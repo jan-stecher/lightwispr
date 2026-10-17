@@ -117,8 +117,8 @@ must_not = ["Freitag"]
 
 [[case]]
 mode = "formal"
-input = "Hallo Frau Schneider, ich wollte fragen, ob wir den Termin am Dienstag auf Mittwoch verschieben können. Viele Grüße, Jan."
-must = ["Frau Schneider", "Mittwoch", "Jan"]
+input = "Hallo Frau Schneider, ich wollte fragen, ob wir den Termin am Dienstag auf Mittwoch verschieben können. Viele Grüße, Lena."
+must = ["Frau Schneider", "Mittwoch", "Lena"]
 
 [[case]]
 mode = "formal"
@@ -139,8 +139,8 @@ must = ["Kosten", "?"]
 
 [[case]]
 mode = "formal"
-input = "Hi Mr. Smith, just wanted to check if you got the invoice. Thanks, Jan."
-must = ["invoice", "Jan"]
+input = "Hi Mr. Smith, just wanted to check if you got the invoice. Thanks, Lena."
+must = ["invoice", "Lena"]
 must_not = ["Rechnung"]
 
 # ── Context ─────────────────────────────────────────────────────────────────
